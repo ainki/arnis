@@ -1,6 +1,6 @@
 use crate::args::Args;
 use crate::coordinate_system::{cartesian::XZPoint, geographic::LLBBox};
-use crate::elevation_data::{fetch_elevation_data, ElevationData};
+use crate::elevation_data::{fetch_elevation_data, fetch_elevation_data_with_provider, ElevationData, TerrainProvider};
 use crate::progress::emit_gui_progress_update;
 use colored::Colorize;
 use image::{Rgb, RgbImage};
@@ -24,6 +24,31 @@ impl Ground {
 
     pub fn new_enabled(bbox: &LLBBox, scale: f64, ground_level: i32) -> Self {
         match fetch_elevation_data(bbox, scale, ground_level) {
+            Ok(elevation_data) => Self {
+                elevation_enabled: true,
+                ground_level,
+                elevation_data: Some(elevation_data),
+            },
+            Err(e) => {
+                eprintln!("Failed to fetch elevation data: {}", e);
+                emit_gui_progress_update(15.0, "Elevation unavailable, using flat ground");
+                // Graceful fallback: disable elevation and keep provided ground_level
+                Self {
+                    elevation_enabled: false,
+                    ground_level,
+                    elevation_data: None,
+                }
+            }
+        }
+    }
+
+    pub fn new_enabled_with_provider(
+        bbox: &LLBBox,
+        scale: f64,
+        ground_level: i32,
+        provider: TerrainProvider,
+    ) -> Self {
+        match fetch_elevation_data_with_provider(bbox, scale, ground_level, provider) {
             Ok(elevation_data) => Self {
                 elevation_enabled: true,
                 ground_level,
@@ -143,6 +168,21 @@ pub fn generate_ground_data(args: &Args) -> Ground {
         println!("{} Fetching elevation...", "[3/7]".bold());
         emit_gui_progress_update(15.0, "Fetching elevation...");
         let ground = Ground::new_enabled(&args.bbox, args.scale, args.ground_level);
+        if args.debug {
+            ground.save_debug_image("elevation_debug");
+        }
+        return ground;
+    }
+    Ground::new_flat(args.ground_level)
+}
+
+/// Generate ground data with a selected terrain provider. If `provider` is None, defaults to AWS.
+pub fn generate_ground_data_with_provider(args: &Args, provider: Option<TerrainProvider>) -> Ground {
+    if args.terrain {
+        println!("{} Fetching elevation...", "[3/7]".bold());
+        emit_gui_progress_update(15.0, "Fetching elevation...");
+        let provider = provider.unwrap_or(TerrainProvider::Aws);
+        let ground = Ground::new_enabled_with_provider(&args.bbox, args.scale, args.ground_level, provider);
         if args.debug {
             ground.save_debug_image("elevation_debug");
         }

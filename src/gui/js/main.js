@@ -320,6 +320,36 @@ function initSettings() {
     localStorage.setItem(telemetryKey, isEnabled ? 'true' : 'false');
   });
 
+  // Terrain provider selector and token handling
+  const terrainProviderSelect = document.getElementById('terrain-provider-select');
+  const mapboxTokenRow = document.getElementById('mapbox-token-row');
+  const mapboxTokenInput = document.getElementById('mapbox-token-input');
+
+  // Load saved provider preference
+  const savedProvider = localStorage.getItem('terrain-provider') || 'aws';
+  if (terrainProviderSelect) {
+    terrainProviderSelect.value = savedProvider;
+    if (savedProvider === 'mapbox' && mapboxTokenRow) {
+      mapboxTokenRow.style.display = 'block';
+    }
+
+    terrainProviderSelect.addEventListener('change', () => {
+      const val = terrainProviderSelect.value;
+      localStorage.setItem('terrain-provider', val);
+      if (val === 'mapbox') {
+        if (mapboxTokenRow) mapboxTokenRow.style.display = 'block';
+      } else {
+        if (mapboxTokenRow) mapboxTokenRow.style.display = 'none';
+      }
+    });
+  }
+
+  // Load saved token if present
+  const savedToken = localStorage.getItem('mapbox-token');
+  if (mapboxTokenInput && savedToken) {
+    mapboxTokenInput.value = savedToken;
+  }
+
 
   /// License and Credits
   function openLicense() {
@@ -678,6 +708,14 @@ async function startGeneration() {
     // Get telemetry consent (defaults to false if not set)
     const telemetryConsent = window.getTelemetryConsent ? window.getTelemetryConsent() : false;
 
+    // Terrain provider and token (if applicable)
+    const terrainProvider = (document.getElementById('terrain-provider-select') && document.getElementById('terrain-provider-select').value) || 'aws';
+    const mapboxToken = (document.getElementById('mapbox-token-input') && document.getElementById('mapbox-token-input').value) || '';
+    if (terrainProvider === 'mapbox' && mapboxToken) {
+      // Persist token locally for convenience
+      localStorage.setItem('mapbox-token', mapboxToken);
+    }
+
     // Pass the selected options to the Rust backend
     await invoke("gui_start_generation", {
         bboxText: selectedBBox,
@@ -693,6 +731,8 @@ async function startGeneration() {
         isNewWorld: isNewWorld,
         spawnPoint: spawnPoint,
         telemetryConsent: telemetryConsent || false
+      , terrainProvider: terrainProvider,
+      mapboxToken: mapboxToken
     });
 
     console.log("Generation process started.");

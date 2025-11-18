@@ -162,6 +162,25 @@
           </div>
         </div>
 
+        <!-- Terrain Provider Selector -->
+        <div class="settings-row">
+          <label for="terrain-provider-select">Terrain Provider</label>
+          <div class="settings-control">
+            <select id="terrain-provider-select" name="terrain-provider-select" class="provider-dropdown">
+              <option value="aws">AWS Terrarium (no token)</option>
+              <option value="mapbox">Mapbox Terrain RGB (requires token)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Mapbox Token Input (hidden unless Mapbox selected) -->
+        <div class="settings-row" id="mapbox-token-row" style="display:none;">
+          <label for="mapbox-token-input">Mapbox Access Token</label>
+          <div class="settings-control">
+            <input type="text" id="mapbox-token-input" name="mapbox-token-input" placeholder="pk.XXXX..." />
+          </div>
+        </div>
+
         <!-- Language Selector -->
         <div class="settings-row">
           <label for="language-select" data-localize="language">Language</label>

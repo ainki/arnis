@@ -10,6 +10,32 @@ const BASE_HEIGHT_SCALE: f64 = 0.7;
 /// AWS S3 Terrarium tiles endpoint (no API key required)
 const AWS_TERRARIUM_URL: &str =
     "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
+/// Mapbox Terrain RGB (mapbox-terrain / terrain-rgb) template.
+/// Replace `{token}` with your Mapbox access token.
+const MAPBOX_TERRAIN_URL: &str =
+    "https://api.mapbox.com/v4/mapbox.terrain-rgb/{z}/{x}/{y}.pngraw?access_token={token}";
+/// Terrain data source selection
+#[derive(Clone, Debug)]
+pub enum TerrainProvider {
+    /// Default AWS Terrarium tiles
+    Aws,
+    /// Mapbox Terrain RGB (requires access token)
+    Mapbox { token: String },
+}
+
+fn build_tile_url(provider: &TerrainProvider, tile_x: u32, tile_y: u32, zoom: u8) -> String {
+    match provider {
+        TerrainProvider::Aws => AWS_TERRARIUM_URL
+            .replace("{z}", &zoom.to_string())
+            .replace("{x}", &tile_x.to_string())
+            .replace("{y}", &tile_y.to_string()),
+        TerrainProvider::Mapbox { token } => MAPBOX_TERRAIN_URL
+            .replace("{z}", &zoom.to_string())
+            .replace("{x}", &tile_x.to_string())
+            .replace("{y}", &tile_y.to_string())
+            .replace("{token}", token),
+    }
+}
 /// Terrarium format offset for height decoding
 const TERRARIUM_OFFSET: f64 = 32768.0;
 /// Minimum zoom level for terrain tiles
@@ -48,18 +74,15 @@ fn lat_lng_to_tile(lat: f64, lng: f64, zoom: u8) -> (u32, u32) {
 /// Downloads a tile from AWS Terrain Tiles service
 fn download_tile(
     client: &reqwest::blocking::Client,
+    url: &str,
     tile_x: u32,
     tile_y: u32,
     zoom: u8,
     tile_path: &Path,
 ) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, Box<dyn std::error::Error>> {
-    println!("Fetching tile x={tile_x},y={tile_y},z={zoom} from AWS Terrain Tiles");
-    let url: String = AWS_TERRARIUM_URL
-        .replace("{z}", &zoom.to_string())
-        .replace("{x}", &tile_x.to_string())
-        .replace("{y}", &tile_y.to_string());
+    println!("Fetching tile x={tile_x},y={tile_y},z={zoom} from {url}");
 
-    let response: reqwest::blocking::Response = client.get(&url).send()?;
+    let response: reqwest::blocking::Response = client.get(url).send()?;
     response.error_for_status_ref()?;
     let bytes = response.bytes()?;
     std::fs::write(tile_path, &bytes)?;
@@ -71,6 +94,27 @@ pub fn fetch_elevation_data(
     bbox: &LLBBox,
     scale: f64,
     ground_level: i32,
+) -> Result<ElevationData, Box<dyn std::error::Error>> {
+    // Preserve existing behavior: default to AWS Terrarium tiles
+    fetch_elevation_data_with_provider(bbox, scale, ground_level, TerrainProvider::Aws)
+}
+
+/// Fetch elevation data using a selected `TerrainProvider`.
+pub fn fetch_elevation_data_with_provider(
+    bbox: &LLBBox,
+    scale: f64,
+    ground_level: i32,
+    provider: TerrainProvider,
+) -> Result<ElevationData, Box<dyn std::error::Error>> {
+    // Move the main implementation into an inner function that accepts a provider reference
+    fetch_elevation_data_inner(bbox, scale, ground_level, &provider)
+}
+
+fn fetch_elevation_data_inner(
+    bbox: &LLBBox,
+    scale: f64,
+    ground_level: i32,
+    provider: &TerrainProvider,
 ) -> Result<ElevationData, Box<dyn std::error::Error>> {
     let (base_scale_z, base_scale_x) = geo_distance(bbox.min(), bbox.max());
 
@@ -101,6 +145,9 @@ pub fn fetch_elevation_data(
     for (tile_x, tile_y) in &tiles {
         // Check if tile is already cached
         let tile_path = tile_cache_dir.join(format!("z{zoom}_x{tile_x}_y{tile_y}.png"));
+
+        // Build URL for this tile according to the selected provider
+        let tile_url = build_tile_url(provider, *tile_x, *tile_y, zoom);
 
         let rgb_img: image::ImageBuffer<Rgb<u8>, Vec<u8>> = if tile_path.exists() {
             // Check if the cached file has a reasonable size (PNG files should be at least a few KB)
@@ -133,7 +180,7 @@ pub fn fetch_elevation_data(
                 }
 
                 // Re-download the tile
-                download_tile(&client, *tile_x, *tile_y, zoom, &tile_path)?
+                download_tile(&client, &tile_url, *tile_x, *tile_y, zoom, &tile_path)?
             } else {
                 println!(
                     "Loading cached tile x={tile_x},y={tile_y},z={zoom} from {}",
@@ -167,13 +214,13 @@ pub fn fetch_elevation_data(
                         }
 
                         // Re-download the tile
-                        download_tile(&client, *tile_x, *tile_y, zoom, &tile_path)?
+                        download_tile(&client, &tile_url, *tile_x, *tile_y, zoom, &tile_path)?
                     }
                 }
             }
         } else {
             // Download the tile for the first time
-            download_tile(&client, *tile_x, *tile_y, zoom, &tile_path)?
+            download_tile(&client, &tile_url, *tile_x, *tile_y, zoom, &tile_path)?
         };
 
         // Only process pixels that fall within the requested bbox
@@ -311,7 +358,14 @@ pub fn fetch_elevation_data(
 
     let height_range: f64 = max_height - min_height;
     // Apply scale factor to height scaling
-    let mut height_scale: f64 = BASE_HEIGHT_SCALE * scale.sqrt(); // sqrt to make height scaling less extreme
+    // Use a provider-specific multiplier because some providers (e.g., Mapbox terrain-rgb)
+    // may have less pronounced elevation changes at the same sampling/resolution.
+    let provider_height_mult: f64 = match provider {
+        TerrainProvider::Mapbox { .. } => 35.0, // amplify Mapbox heights to be more visible
+        _ => 1.0,
+    };
+
+    let mut height_scale: f64 = BASE_HEIGHT_SCALE * scale.sqrt() * provider_height_mult; // sqrt to make height scaling less extreme
     let mut scaled_range: f64 = height_range * height_scale;
 
     // Adaptive scaling: ensure we don't exceed reasonable Y range
@@ -576,6 +630,18 @@ mod tests {
             url,
             "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/15/17436/11365.png"
         );
+    }
+
+    #[test]
+    fn test_mapbox_url_generation() {
+        let token = "pk.testtoken";
+        let provider = super::TerrainProvider::Mapbox {
+            token: token.to_string(),
+        };
+
+        let url = super::build_tile_url(&provider, 17436, 11365, 15);
+        assert!(url.contains("mapbox.terrain-rgb/15/17436/11365"));
+        assert!(url.contains(token));
     }
 
     #[test]
