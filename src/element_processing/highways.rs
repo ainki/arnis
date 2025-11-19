@@ -155,6 +155,12 @@ fn generate_highways_internal(
             let mut add_outline = false;
             let scale_factor = args.scale;
 
+            // Ensure we have a `ProcessedWay` instance for way-specific logic
+            // Use an underscore-prefixed name because we rebind `way` later
+            let ProcessedElement::Way(_way) = element else {
+                return;
+            };
+
             // Parse the layer value for elevation calculation
             let layer_value = element
                 .tags()
@@ -175,8 +181,12 @@ fn generate_highways_internal(
             // Determine block type and range based on highway type
             match highway_type.as_str() {
                 "footway" | "pedestrian" => {
-                    block_type = GRAY_CONCRETE;
+                    block_type = highway_surface(element, &GRAY_CONCRETE);
                     block_range = 1;
+                }
+                "cycleway" => {
+                    block_type = highway_surface(element, &GRAY_CONCRETE);
+                    block_range = 2;
                 }
                 "path" => {
                     block_type = DIRT_PATH;
@@ -197,12 +207,12 @@ fn generate_highways_internal(
                     block_range = 1;
                 }
                 "service" => {
-                    block_type = GRAY_CONCRETE;
+                    block_type = highway_surface(element, &GRAY_CONCRETE);
                     block_range = 2;
                 }
                 "secondary_link" | "tertiary_link" => {
                     //Exit ramps, sliproads
-                    block_type = BLACK_CONCRETE;
+                    block_type = highway_surface(element, &BLACK_CONCRETE);
                     block_range = 1;
                 }
                 "escape" => {
@@ -212,7 +222,7 @@ fn generate_highways_internal(
                 }
                 "steps" => {
                     //TODO: Add correct stairs respecting height, step_count, etc.
-                    block_type = GRAY_CONCRETE;
+                    block_type = highway_surface(element, &GRAY_CONCRETE);
                     block_range = 1;
                 }
 
@@ -635,4 +645,26 @@ pub fn generate_aeroway(editor: &mut WorldEditor, way: &ProcessedWay, args: &Arg
         }
         previous_node = Some((node.x, node.z));
     }
+}
+
+pub fn highway_surface(element: &ProcessedElement, default_surface: &Block) -> Block {
+    // Start with the provided default surface value
+    let mut surface_block: Block = *default_surface;
+
+    if let Some(surface) = element.tags().get("surface") {
+        surface_block = match surface.as_str() {
+            "paving_stones" | "sett" => STONE_BRICKS,
+            "bricks" => BRICK,
+            "wood" => OAK_PLANKS,
+            "asphalt" => BLACK_CONCRETE,
+            "gravel" | "fine_gravel" => GRAVEL,
+            "grass" => GRASS_BLOCK,
+            "dirt" | "ground" | "earth" => COARSE_DIRT,
+            "sand" => SAND,
+            "concrete" => LIGHT_GRAY_CONCRETE,
+            _ => *default_surface, // Default to provided default for unknown surfaces
+        };
+    }
+
+    surface_block
 }
