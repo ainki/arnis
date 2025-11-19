@@ -17,14 +17,14 @@ pub fn generate_landuse(editor: &mut WorldEditor, element: &ProcessedWay, args: 
         "cemetery" => PODZOL,
         "construction" => COARSE_DIRT,
         "traffic_island" => STONE_BLOCK_SLAB,
-        "residential" => {
-            let residential_tag = element.tags.get("residential").unwrap_or(&binding);
-            if residential_tag == "rural" {
-                GRASS_BLOCK
-            } else {
-                STONE_BRICKS
-            }
-        }
+        // "residential" => {
+        //     let residential_tag = element.tags.get("residential").unwrap_or(&binding);
+        //     if residential_tag == "rural" {
+        //         GRASS_BLOCK
+        //     } else {
+        //         STONE_BRICKS
+        //     }
+        // }
         "commercial" => SMOOTH_STONE,
         "education" => POLISHED_ANDESITE,
         "religious" => POLISHED_ANDESITE,
