@@ -4,13 +4,57 @@ use crate::coordinate_system::cartesian::XZBBox;
 use crate::coordinate_system::geographic::LLBBox;
 use crate::element_processing::*;
 use crate::ground::Ground;
-use crate::osm_parser::{ProcessedElement, ProcessedMemberRole};
+use crate::osm_parser::{
+    ProcessedElement, ProcessedMember, ProcessedMemberRole, ProcessedRelation,
+};
 use crate::progress::emit_gui_progress_update;
 use crate::telemetry::{send_log, LogLevel};
 use crate::world_editor::WorldEditor;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashSet;
+
+fn is_building_relation(relation: &ProcessedRelation) -> bool {
+    relation.tags.contains_key("building")
+        || relation.tags.contains_key("building:part")
+        || relation
+            .tags
+            .get("type")
+            .is_some_and(|value| value == "building")
+}
+
+fn member_is_part(member: &ProcessedMember) -> bool {
+    member.role == ProcessedMemberRole::Part || member.way.tags.contains_key("building:part")
+}
+
+fn detect_building_part_relations(elements: &[ProcessedElement]) -> (HashSet<u64>, HashSet<u64>) {
+    let mut outlines_with_parts: HashSet<u64> = HashSet::new();
+    let mut relations_with_parts: HashSet<u64> = HashSet::new();
+
+    for element in elements {
+        if let ProcessedElement::Relation(relation) = element {
+            if !is_building_relation(relation) {
+                continue;
+            }
+
+            let has_part_members = relation.members.iter().any(member_is_part);
+
+            if has_part_members {
+                relations_with_parts.insert(relation.id);
+
+                for member in relation
+                    .members
+                    .iter()
+                    .filter(|member| !member_is_part(member))
+                {
+                    outlines_with_parts.insert(member.way.id);
+                }
+            }
+        }
+    }
+
+    (outlines_with_parts, relations_with_parts)
+}
 
 pub const MIN_Y: i32 = -64;
 
@@ -23,34 +67,18 @@ pub fn generate_world(
 ) -> Result<(), String> {
     let mut editor: WorldEditor = WorldEditor::new(args.path.clone(), &xzbbox, llbbox);
 
-    let mut outlines_with_parts: HashSet<u64> = HashSet::new();
-    let mut relations_with_parts: HashSet<u64> = HashSet::new();
+    let (outlines_with_parts, relations_with_parts) = detect_building_part_relations(&elements);
 
-    for element in &elements {
-        if let ProcessedElement::Relation(relation) = element {
-            if !(relation.tags.contains_key("building")
-                || relation.tags.contains_key("building:part"))
-            {
-                continue;
-            }
-
-            let has_part_members = relation
-                .members
-                .iter()
-                .any(|member| member.role == ProcessedMemberRole::Part);
-
-            if has_part_members {
-                relations_with_parts.insert(relation.id);
-
-                for member in relation
-                    .members
-                    .iter()
-                    .filter(|member| member.role == ProcessedMemberRole::Outer)
-                {
-                    outlines_with_parts.insert(member.way.id);
-                }
-            }
-        }
+    if args.debug && !relations_with_parts.is_empty() {
+        let mut sample_outlines: Vec<u64> = outlines_with_parts.iter().copied().collect();
+        sample_outlines.sort_unstable();
+        sample_outlines.truncate(10);
+        println!(
+            "Detected {} building relation(s) with parts (skipping {} outline way(s))",
+            relations_with_parts.len(),
+            outlines_with_parts.len()
+        );ƒ
+        println!("Sample outline way IDs flagged: {:?}", sample_outlines);
     }
 
     println!("{} Processing data...", "[4/7]".bold());
@@ -95,6 +123,10 @@ pub fn generate_world(
             ProcessedElement::Way(way) => {
                 if outlines_with_parts.contains(&way.id) && !way.tags.contains_key("building:part")
                 {
+                    // println!(
+                    //     "Skipping outline way {} because its relation has building parts",
+                    //     way.id
+                    // );
                     continue;
                 }
 
@@ -154,8 +186,14 @@ pub fn generate_world(
                 }
             }
             ProcessedElement::Relation(rel) => {
-                if rel.tags.contains_key("building") || rel.tags.contains_key("building:part") {
+                if is_building_relation(rel) {
                     if relations_with_parts.contains(&rel.id) {
+                        if args.debug {
+                            println!(
+                                "Skipping relation {} because its parts were handled individually",
+                                rel.id
+                            );
+                        }
                         continue;
                     }
                     buildings::generate_building_from_relation(&mut editor, rel, args);
@@ -299,4 +337,74 @@ pub fn generate_world(
     emit_gui_progress_update(100.0, "Done! World generation completed.");
     println!("{}", "Done! World generation completed.".green().bold());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coordinate_system::geographic::LLBBox;
+    use crate::osm_parser::parse_osm_data;
+    use serde_json::Value;
+
+    #[test]
+    fn relation_outline_is_flagged_for_skipping() {
+        let json = std::fs::read_to_string("tests/data/relation_12032571.json")
+            .expect("fixture missing: relation_12032571.json");
+        let json_value: Value = serde_json::from_str(&json).unwrap();
+        let bbox = LLBBox::new(60.1542, 24.6287, 60.1545, 24.6293).unwrap();
+        let (elements, _) = parse_osm_data(json_value, bbox, 1.0, false);
+
+        let (outlines, relations) = detect_building_part_relations(&elements);
+
+        assert!(relations.contains(&12032571));
+        assert!(outlines.contains(&37104503));
+    }
+
+    #[test]
+    fn relation_13981741_outline_is_flagged() {
+        let json = std::fs::read_to_string("tests/data/relation_13981741.json")
+            .expect("fixture missing: relation_13981741.json");
+        let json_value: Value = serde_json::from_str(&json).unwrap();
+        let bbox = LLBBox::new(60.1480, 24.6520, 60.1515, 24.6585).unwrap();
+        let (elements, _) = parse_osm_data(json_value, bbox, 1.0, false);
+
+        let (outlines, relations) = detect_building_part_relations(&elements);
+
+        let outline_way = elements.iter().find_map(|element| {
+            if let ProcessedElement::Way(way) = element {
+                (way.id == 972283013).then_some(way)
+            } else {
+                None
+            }
+        });
+
+        assert!(relations.contains(&13981741));
+        assert!(outlines.contains(&972283013));
+        assert!(outline_way.is_some());
+        assert!(!outline_way.unwrap().tags.contains_key("building:part"));
+    }
+
+    #[test]
+    fn relation_11484587_outline_is_flagged() {
+        let json = std::fs::read_to_string("tests/data/relation_11484587.json")
+            .expect("fixture missing: relation_11484587.json");
+        let json_value: Value = serde_json::from_str(&json).unwrap();
+        let bbox = LLBBox::new(60.1483, 24.6523, 60.1493, 24.6539).unwrap();
+        let (elements, _) = parse_osm_data(json_value, bbox, 1.0, false);
+
+        let (outlines, relations) = detect_building_part_relations(&elements);
+
+        let outline_way = elements.iter().find_map(|element| {
+            if let ProcessedElement::Way(way) = element {
+                (way.id == 840899088).then_some(way)
+            } else {
+                None
+            }
+        });
+
+        assert!(relations.contains(&11484587));
+        assert!(outlines.contains(&840899088));
+        assert!(outline_way.is_some());
+        assert!(!outline_way.unwrap().tags.contains_key("building:part"));
+    }
 }
