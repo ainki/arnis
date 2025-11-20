@@ -1,6 +1,8 @@
 use crate::args::Args;
 use crate::coordinate_system::{cartesian::XZPoint, geographic::LLBBox};
-use crate::elevation_data::{fetch_elevation_data, fetch_elevation_data_with_provider, ElevationData, TerrainProvider};
+use crate::elevation_data::{
+    fetch_elevation_data, fetch_elevation_data_with_provider, ElevationData, TerrainProvider,
+};
 use crate::progress::emit_gui_progress_update;
 use colored::Colorize;
 use image::{Rgb, RgbImage};
@@ -177,12 +179,16 @@ pub fn generate_ground_data(args: &Args) -> Ground {
 }
 
 /// Generate ground data with a selected terrain provider. If `provider` is None, defaults to AWS.
-pub fn generate_ground_data_with_provider(args: &Args, provider: Option<TerrainProvider>) -> Ground {
+pub fn generate_ground_data_with_provider(
+    args: &Args,
+    provider: Option<TerrainProvider>,
+) -> Ground {
     if args.terrain {
         println!("{} Fetching elevation...", "[3/7]".bold());
         emit_gui_progress_update(15.0, "Fetching elevation...");
         let provider = provider.unwrap_or(TerrainProvider::Aws);
-        let ground = Ground::new_enabled_with_provider(&args.bbox, args.scale, args.ground_level, provider);
+        let ground =
+            Ground::new_enabled_with_provider(&args.bbox, args.scale, args.ground_level, provider);
         if args.debug {
             ground.save_debug_image("elevation_debug");
         }
