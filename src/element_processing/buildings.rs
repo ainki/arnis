@@ -28,6 +28,7 @@ pub fn generate_buildings(
     element: &ProcessedWay,
     args: &Args,
     relation_levels: Option<i32>,
+    hole_polygons: Option<&[&ProcessedWay]>,
 ) {
     let is_building_part = element.tags.contains_key("building:part");
 
@@ -67,9 +68,32 @@ pub fn generate_buildings(
 
     // Cache floodfill result: compute once and reuse throughout
     let polygon_coords: Vec<(i32, i32)> = element.nodes.iter().map(|n| (n.x, n.z)).collect();
-    let cached_floor_area: Vec<(i32, i32)> =
+    let mut cached_floor_area: Vec<(i32, i32)> =
         flood_fill_area(&polygon_coords, args.timeout.as_ref());
+
+    if let Some(holes) = hole_polygons {
+        if !holes.is_empty() {
+            let mut hole_points: HashSet<(i32, i32)> = HashSet::new();
+            for hole_way in holes {
+                let hole_coords: Vec<(i32, i32)> =
+                    hole_way.nodes.iter().map(|n| (n.x, n.z)).collect();
+                if hole_coords.len() < 3 {
+                    continue;
+                }
+                let hole_area = flood_fill_area(&hole_coords, args.timeout.as_ref());
+                hole_points.extend(hole_area);
+            }
+
+            if !hole_points.is_empty() {
+                cached_floor_area.retain(|point| !hole_points.contains(point));
+            }
+        }
+    }
+
     let cached_footprint_size = cached_floor_area.len();
+    if cached_footprint_size == 0 {
+        return;
+    }
 
     // Use fixed starting Y coordinate based on maximum ground level when terrain is enabled
     let start_y_offset = if args.terrain {
@@ -1581,10 +1605,22 @@ pub fn generate_building_from_relation(
         .and_then(|l: &String| l.parse::<i32>().ok())
         .unwrap_or(2); // Default to 2 levels
 
-    // Process the outer way to create the building walls
+    let part_members: Vec<&ProcessedWay> = relation
+        .members
+        .iter()
+        .filter(|member| member.role == ProcessedMemberRole::Part)
+        .map(|member| &member.way)
+        .collect();
+    let holes: Option<&[&ProcessedWay]> = if part_members.is_empty() {
+        None
+    } else {
+        Some(part_members.as_slice())
+    };
+
+    // Process the outer way to create the building walls, carving out building:part footprints if needed
     for member in &relation.members {
         if member.role == ProcessedMemberRole::Outer {
-            generate_buildings(editor, &member.way, args, Some(relation_levels));
+            generate_buildings(editor, &member.way, args, Some(relation_levels), holes);
         }
     }
 

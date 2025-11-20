@@ -131,7 +131,7 @@ pub fn generate_world(
                 }
 
                 if way.tags.contains_key("building") || way.tags.contains_key("building:part") {
-                    buildings::generate_buildings(&mut editor, way, args, None);
+                    buildings::generate_buildings(&mut editor, way, args, None, None);
                 } else if way.tags.contains_key("highway") {
                     highways::generate_highways(&mut editor, element, args, &elements);
                 } else if way.tags.contains_key("landuse") {
@@ -187,15 +187,6 @@ pub fn generate_world(
             }
             ProcessedElement::Relation(rel) => {
                 if is_building_relation(rel) {
-                    if relations_with_parts.contains(&rel.id) {
-                        if args.debug {
-                            println!(
-                                "Skipping relation {} because its parts were handled individually",
-                                rel.id
-                            );
-                        }
-                        continue;
-                    }
                     buildings::generate_building_from_relation(&mut editor, rel, args);
                 } else if rel.tags.contains_key("water")
                     || rel
