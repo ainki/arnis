@@ -41,6 +41,7 @@ pub fn generate_landuse(editor: &WorldEditor, element: &ProcessedWay, args: &Arg
             }
         }
         "quarry" => STONE,
+        "brownfield" => COARSE_DIRT,
         _ => GRASS_BLOCK,
     };
 
