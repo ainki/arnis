@@ -85,9 +85,14 @@ pub fn generate_buildings(
     let mut cached_floor_area: Vec<(i32, i32)> =
         flood_fill_area(&polygon_coords, args.timeout.as_ref());
 
+    let mut has_inner_wall_holes = false;
+    let mut part_coverage_ratio = 0.0;
+    let mut part_coverage_points = 0usize;
+
     if let Some(holes) = hole_polygons {
         if !holes.is_empty() {
             let mut hole_points: HashSet<(i32, i32)> = HashSet::new();
+            let mut part_points: HashSet<(i32, i32)> = HashSet::new();
             for hole in holes {
                 let hole_coords: Vec<(i32, i32)> =
                     hole.way.nodes.iter().map(|n| (n.x, n.z)).collect();
@@ -95,16 +100,29 @@ pub fn generate_buildings(
                     continue;
                 }
                 let hole_area = flood_fill_area(&hole_coords, args.timeout.as_ref());
-                hole_points.extend(hole_area);
+                if hole.add_walls {
+                    has_inner_wall_holes = true;
+                }
+                for point in hole_area {
+                    if !hole.add_walls {
+                        part_points.insert(point);
+                    }
+                    hole_points.insert(point);
+                }
             }
 
             if !hole_points.is_empty() {
                 cached_floor_area.retain(|point| !hole_points.contains(point));
             }
+
+            part_coverage_points = part_points.len();
         }
     }
 
     let cached_footprint_size = cached_floor_area.len();
+    if cached_footprint_size > 0 {
+        part_coverage_ratio = part_coverage_points as f64 / cached_footprint_size as f64;
+    }
     if cached_footprint_size == 0 {
         return;
     }
@@ -546,11 +564,11 @@ pub fn generate_buildings(
         }
     }
 
-    let suppress_outer_walls = hole_polygons
-        .map(|holes| holes.iter().any(|hole| !hole.add_walls))
-        .unwrap_or(false);
-
     // Process nodes to create walls and corners (outer shell)
+    const PART_COVERAGE_SKIP_THRESHOLD: f64 = 0.65;
+    let suppress_outer_walls =
+        !has_inner_wall_holes && part_coverage_ratio >= PART_COVERAGE_SKIP_THRESHOLD;
+
     if !suppress_outer_walls {
         build_wall_ring(
             &element.nodes,
