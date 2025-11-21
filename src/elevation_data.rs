@@ -1,7 +1,9 @@
 use crate::coordinate_system::{geographic::LLBBox, transformation::geo_distance};
 use crate::telemetry::{send_log, LogLevel};
 use image::Rgb;
+use rayon::prelude::*;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// Maximum Y coordinate in Minecraft (build height limit)
 const MAX_Y: i32 = 319;
@@ -43,6 +45,22 @@ const MIN_ZOOM: u8 = 10;
 /// Maximum zoom level for terrain tiles
 const MAX_ZOOM: u8 = 15;
 
+/// Decode elevation from RGB pixel based on provider format
+fn decode_height(pixel: &Rgb<u8>, provider: &TerrainProvider) -> f64 {
+    match provider {
+        TerrainProvider::Aws => {
+            // Terrarium format: (R * 256 + G + B/256) - 32768
+            (pixel[0] as f64 * 256.0 + pixel[1] as f64 + pixel[2] as f64 / 256.0) - TERRARIUM_OFFSET
+        }
+        TerrainProvider::Mapbox { .. } => {
+            // Mapbox RGB format: -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
+            -10000.0
+                + ((pixel[0] as f64 * 256.0 * 256.0 + pixel[1] as f64 * 256.0 + pixel[2] as f64)
+                    * 0.1)
+        }
+    }
+}
+
 /// Holds processed elevation data and metadata
 #[derive(Clone)]
 pub struct ElevationData {
@@ -71,7 +89,7 @@ fn lat_lng_to_tile(lat: f64, lng: f64, zoom: u8) -> (u32, u32) {
     (x, y)
 }
 
-/// Downloads a tile from AWS Terrain Tiles service
+/// Downloads a tile from terrain tile service
 fn download_tile(
     client: &reqwest::blocking::Client,
     url: &str,
@@ -79,6 +97,7 @@ fn download_tile(
     tile_y: u32,
     zoom: u8,
     tile_path: &Path,
+    provider: &TerrainProvider,
 ) -> Result<image::ImageBuffer<Rgb<u8>, Vec<u8>>, Box<dyn std::error::Error>> {
     println!("Fetching tile x={tile_x},y={tile_y},z={zoom} from {url}");
 
@@ -87,7 +106,40 @@ fn download_tile(
     let bytes = response.bytes()?;
     std::fs::write(tile_path, &bytes)?;
     let img: image::DynamicImage = image::load_from_memory(&bytes)?;
-    Ok(img.to_rgb8())
+    let rgb_img = img.to_rgb8();
+
+    // Validate tile: check if it has reasonable elevation data
+    // Sample a few pixels to see if they decode to reasonable values
+    let mut sample_count = 0;
+    let mut valid_count = 0;
+    for y in (0..rgb_img.height()).step_by(64) {
+        for x in (0..rgb_img.width()).step_by(64) {
+            let pixel = rgb_img.get_pixel(x, y);
+            let height = decode_height(pixel, provider);
+            sample_count += 1;
+            // Reasonable elevation range: -500m to 9000m (covers Dead Sea to Everest)
+            if (-500.0..=9000.0).contains(&height) {
+                valid_count += 1;
+            }
+        }
+    }
+
+    // If less than 10% of samples are in valid range, tile is likely corrupted
+    if sample_count > 0 && (valid_count as f64 / sample_count as f64) < 0.1 {
+        eprintln!(
+            "Warning: Tile x={tile_x},y={tile_y},z={zoom} appears corrupted ({}/{} samples valid)",
+            valid_count, sample_count
+        );
+        send_log(
+            LogLevel::Warning,
+            &format!(
+                "Tile {}/{}/{} appears corrupted or uses different encoding",
+                zoom, tile_x, tile_y
+            ),
+        );
+    }
+
+    Ok(rgb_img)
 }
 
 pub fn fetch_elevation_data(
@@ -131,65 +183,40 @@ fn fetch_elevation_data_inner(
     let grid_height: usize = scale_factor_z as usize;
 
     // Initialize height grid with proper dimensions
-    let mut height_grid: Vec<Vec<f64>> = vec![vec![f64::NAN; grid_width]; grid_height];
-    let mut extreme_values_found = Vec::new(); // Track extreme values for debugging
-
-    let client: reqwest::blocking::Client = reqwest::blocking::Client::new();
+    let height_grid: Vec<Vec<f64>> = vec![vec![f64::NAN; grid_width]; grid_height];
 
     let tile_cache_dir = Path::new("./arnis-tile-cache");
     if !tile_cache_dir.exists() {
         std::fs::create_dir_all(tile_cache_dir)?;
     }
 
-    // Fetch and process each tile
-    for (tile_x, tile_y) in &tiles {
-        // Check if tile is already cached
-        let tile_path = tile_cache_dir.join(format!("z{zoom}_x{tile_x}_y{tile_y}.png"));
+    // Process tiles in parallel
+    let height_grid = Arc::new(Mutex::new(height_grid));
+    let extreme_values_found: Arc<Mutex<Vec<(&u32, &u32, usize, usize, u8, u8, u8, f64)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let errors = Arc::new(Mutex::new(Vec::new()));
 
-        // Build URL for this tile according to the selected provider
-        let tile_url = build_tile_url(provider, *tile_x, *tile_y, zoom);
+    tiles.par_iter().for_each(|(tile_x, tile_y)| {
+        // Create a client per thread to avoid sharing issues
+        let client = reqwest::blocking::Client::new();
 
-        let rgb_img: image::ImageBuffer<Rgb<u8>, Vec<u8>> = if tile_path.exists() {
-            // Check if the cached file has a reasonable size (PNG files should be at least a few KB)
-            let file_size = match std::fs::metadata(&tile_path) {
-                Ok(metadata) => metadata.len(),
-                Err(_) => 0,
-            };
+        let result: Result<(), Box<dyn std::error::Error>> = (|| {
+            // Check if tile is already cached
+            let tile_path = tile_cache_dir.join(format!("z{zoom}_x{tile_x}_y{tile_y}.png"));
 
-            if file_size < 1000 {
-                eprintln!(
-                    "Warning: Cached tile at {} appears to be too small ({} bytes). Refetching tile.",
-                    tile_path.display(),
-                    file_size
-                );
-                send_log(
-                    LogLevel::Warning,
-                    "Cached tile appears to be too small. Refetching tile.",
-                );
+            // Build URL for this tile according to the selected provider
+            let tile_url = build_tile_url(provider, *tile_x, *tile_y, zoom);
 
-                // Remove the potentially corrupted file
-                if let Err(remove_err) = std::fs::remove_file(&tile_path) {
-                    eprintln!(
-                        "Warning: Failed to remove corrupted tile file: {}",
-                        remove_err
-                    );
-                    send_log(
-                        LogLevel::Warning,
-                        "Failed to remove corrupted tile file during refetching.",
-                    );
-                }
-
-                // Re-download the tile
-                download_tile(&client, &tile_url, *tile_x, *tile_y, zoom, &tile_path)?
-            } else {
-                println!(
-                    "Loading cached tile x={tile_x},y={tile_y},z={zoom} from {}",
-                    tile_path.display()
-                );
-
-                // Try to load cached tile, but handle corruption gracefully
+            let rgb_img: image::ImageBuffer<Rgb<u8>, Vec<u8>> = if tile_path.exists() {
+                // Try to load cached tile
                 match image::open(&tile_path) {
-                    Ok(img) => img.to_rgb8(),
+                    Ok(img) => {
+                        println!(
+                            "Loading cached tile x={tile_x},y={tile_y},z={zoom} from {}",
+                            tile_path.display()
+                        );
+                        img.to_rgb8()
+                    }
                     Err(e) => {
                         eprintln!(
                             "Cached tile at {} is corrupted or invalid: {}. Re-downloading...",
@@ -202,79 +229,159 @@ fn fetch_elevation_data_inner(
                         );
 
                         // Remove the corrupted file
-                        if let Err(remove_err) = std::fs::remove_file(&tile_path) {
-                            eprintln!(
-                                "Warning: Failed to remove corrupted tile file: {}",
-                                remove_err
-                            );
-                            send_log(
-                                LogLevel::Warning,
-                                "Failed to remove corrupted tile file during re-download.",
-                            );
-                        }
+                        let _ = std::fs::remove_file(&tile_path);
 
                         // Re-download the tile
-                        download_tile(&client, &tile_url, *tile_x, *tile_y, zoom, &tile_path)?
+                        download_tile(
+                            &client, &tile_url, *tile_x, *tile_y, zoom, &tile_path, provider,
+                        )?
+                    }
+                }
+            } else {
+                // Download the tile for the first time
+                download_tile(
+                    &client, &tile_url, *tile_x, *tile_y, zoom, &tile_path, provider,
+                )?
+            };
+
+            // Process pixels for this tile
+            // Pre-calculate tile constants outside the loop
+            let tile_x_f64 = *tile_x as f64;
+            let tile_y_f64 = *tile_y as f64;
+            let zoom_pow = 2.0_f64.powi(zoom as i32);
+            let bbox_lng_min = bbox.min().lng();
+            let bbox_lng_max = bbox.max().lng();
+            let bbox_lat_min = bbox.min().lat();
+            let bbox_lat_max = bbox.max().lat();
+            let bbox_lng_range = bbox_lng_max - bbox_lng_min;
+            let bbox_lat_range = bbox_lat_max - bbox_lat_min;
+
+            let mut local_extreme_values = Vec::new();
+            let mut local_updates = Vec::with_capacity(256 * 256);
+
+            // Process pixels in batches to minimize lock contention
+            const BATCH_SIZE: usize = 4096; // Process ~64x64 pixels before acquiring lock
+
+            // Only process pixels that fall within the requested bbox
+            for (y, row) in rgb_img.rows().enumerate() {
+                for (x, pixel) in row.enumerate() {
+                    // Convert tile pixel coordinates back to geographic coordinates
+                    let pixel_lng = ((tile_x_f64 + x as f64 / 256.0) / zoom_pow) * 360.0 - 180.0;
+                    let pixel_lat_rad = std::f64::consts::PI
+                        * (1.0 - 2.0 * (tile_y_f64 + y as f64 / 256.0) / zoom_pow);
+                    let pixel_lat = pixel_lat_rad.sinh().atan().to_degrees();
+
+                    // Skip pixels outside the requested bounding box
+                    if pixel_lat < bbox_lat_min
+                        || pixel_lat > bbox_lat_max
+                        || pixel_lng < bbox_lng_min
+                        || pixel_lng > bbox_lng_max
+                    {
+                        continue;
+                    }
+
+                    // Map geographic coordinates to grid coordinates
+                    let rel_x = (pixel_lng - bbox_lng_min) / bbox_lng_range;
+                    let rel_y = 1.0 - (pixel_lat - bbox_lat_min) / bbox_lat_range;
+
+                    let scaled_x = (rel_x * grid_width as f64).round() as usize;
+                    let scaled_y = (rel_y * grid_height as f64).round() as usize;
+
+                    if scaled_y >= grid_height || scaled_x >= grid_width {
+                        continue;
+                    }
+
+                    // Decode height using provider-specific format
+                    let mut height: f64 = decode_height(pixel, provider);
+
+                    // Clamp to Earth's realistic elevation range to handle corrupted data
+                    const MIN_EARTH_ELEVATION: f64 = -500.0;
+                    const MAX_EARTH_ELEVATION: f64 = 9000.0;
+
+                    let original_height = height;
+                    height = height.clamp(MIN_EARTH_ELEVATION, MAX_EARTH_ELEVATION);
+
+                    // Track extreme values for debugging (before clamping)
+                    if !(-1000.0..=10000.0).contains(&original_height) {
+                        local_extreme_values.push((
+                            tile_x,
+                            tile_y,
+                            x,
+                            y,
+                            pixel[0],
+                            pixel[1],
+                            pixel[2],
+                            original_height,
+                        ));
+                    }
+
+                    local_updates.push((scaled_y, scaled_x, height));
+
+                    // Apply batch if it's full to reduce lock hold time
+                    if local_updates.len() >= BATCH_SIZE {
+                        let mut grid = height_grid.lock().unwrap();
+                        for &(y, x, h) in &local_updates {
+                            grid[y][x] = h;
+                        }
+                        drop(grid);
+                        local_updates.clear();
                     }
                 }
             }
-        } else {
-            // Download the tile for the first time
-            download_tile(&client, &tile_url, *tile_x, *tile_y, zoom, &tile_path)?
-        };
 
-        // Only process pixels that fall within the requested bbox
-        for (y, row) in rgb_img.rows().enumerate() {
-            for (x, pixel) in row.enumerate() {
-                // Convert tile pixel coordinates back to geographic coordinates
-                let pixel_lng = ((*tile_x as f64 + x as f64 / 256.0) / (2.0_f64.powi(zoom as i32)))
-                    * 360.0
-                    - 180.0;
-                let pixel_lat_rad = std::f64::consts::PI
-                    * (1.0
-                        - 2.0 * (*tile_y as f64 + y as f64 / 256.0) / (2.0_f64.powi(zoom as i32)));
-                let pixel_lat = pixel_lat_rad.sinh().atan().to_degrees();
-
-                // Skip pixels outside the requested bounding box
-                if pixel_lat < bbox.min().lat()
-                    || pixel_lat > bbox.max().lat()
-                    || pixel_lng < bbox.min().lng()
-                    || pixel_lng > bbox.max().lng()
-                {
-                    continue;
+            // Apply remaining updates
+            if !local_updates.is_empty() {
+                let mut grid = height_grid.lock().unwrap();
+                for (y, x, height) in local_updates {
+                    grid[y][x] = height;
                 }
-
-                // Map geographic coordinates to grid coordinates
-                let rel_x = (pixel_lng - bbox.min().lng()) / (bbox.max().lng() - bbox.min().lng());
-                let rel_y =
-                    1.0 - (pixel_lat - bbox.min().lat()) / (bbox.max().lat() - bbox.min().lat());
-
-                let scaled_x = (rel_x * grid_width as f64).round() as usize;
-                let scaled_y = (rel_y * grid_height as f64).round() as usize;
-
-                if scaled_y >= grid_height || scaled_x >= grid_width {
-                    continue;
-                }
-
-                // Decode Terrarium format: (R * 256 + G + B/256) - 32768
-                let height: f64 =
-                    (pixel[0] as f64 * 256.0 + pixel[1] as f64 + pixel[2] as f64 / 256.0)
-                        - TERRARIUM_OFFSET;
-
-                // Track extreme values for debugging
-                if !(-1000.0..=10000.0).contains(&height) {
-                    extreme_values_found
-                        .push((tile_x, tile_y, x, y, pixel[0], pixel[1], pixel[2], height));
-                    if extreme_values_found.len() <= 5 {
-                        // Only log first 5 extreme values
-                        eprintln!("Extreme value found: tile({tile_x},{tile_y}) pixel({x},{y}) RGB({},{},{}) = {height}m", 
-                                 pixel[0], pixel[1], pixel[2]);
-                    }
-                }
-
-                height_grid[scaled_y][scaled_x] = height;
+                drop(grid);
             }
+
+            // Add extreme values to shared collection
+            if !local_extreme_values.is_empty() {
+                let mut extremes = extreme_values_found.lock().unwrap();
+                extremes.extend(local_extreme_values);
+            }
+
+            Ok(())
+        })();
+
+        // Store errors for later reporting
+        if let Err(e) = result {
+            eprintln!("Error processing tile {}/{}: {}", tile_x, tile_y, e);
+            errors
+                .lock()
+                .unwrap()
+                .push(format!("Tile {}/{}: {}", tile_x, tile_y, e));
         }
+    });
+
+    // Check if there were any errors
+    let errors = Arc::try_unwrap(errors).unwrap().into_inner().unwrap();
+    if !errors.is_empty() {
+        eprintln!(
+            "Encountered {} errors during tile processing:",
+            errors.len()
+        );
+        for (i, error) in errors.iter().take(5).enumerate() {
+            eprintln!("  {}: {}", i + 1, error);
+        }
+        if errors.len() > 5 {
+            eprintln!("  ... and {} more", errors.len() - 5);
+        }
+        return Err(format!("Failed to process {} tiles", errors.len()).into());
+    }
+
+    let mut height_grid = Arc::try_unwrap(height_grid).unwrap().into_inner().unwrap();
+    let extreme_values_found = Arc::try_unwrap(extreme_values_found)
+        .unwrap()
+        .into_inner()
+        .unwrap();
+
+    // Log first few extreme values
+    for (tile_x, tile_y, x, y, r, g, b, height) in extreme_values_found.iter().take(5) {
+        eprintln!("Extreme value found: tile({tile_x},{tile_y}) pixel({x},{y}) RGB({r},{g},{b}) = {height}m");
     }
 
     // Report on extreme values found
@@ -284,6 +391,9 @@ fn fetch_elevation_data_inner(
             extreme_values_found.len()
         );
         eprintln!("This may indicate corrupted tile data or areas with invalid elevation data");
+        eprintln!("The system has clamped these values to realistic Earth elevation ranges (-500m to 9000m)");
+        eprintln!("If you're seeing flat terrain where you expect hills/mountains, the elevation tiles may be corrupted.");
+        eprintln!("Try deleting the 'arnis-tile-cache' folder to re-download tiles.");
     }
 
     // Fill in any NaN values by interpolating from nearest valid values
@@ -320,8 +430,6 @@ fn fetch_elevation_data_inner(
 
     // Continue with the existing blur and conversion to Minecraft heights...
     let blurred_heights: Vec<Vec<f64>> = apply_gaussian_blur(&height_grid, sigma);
-
-    let mut mc_heights: Vec<Vec<i32>> = Vec::with_capacity(blurred_heights.len());
 
     // Find min/max in raw data
     let mut min_height: f64 = f64::MAX;
@@ -361,7 +469,7 @@ fn fetch_elevation_data_inner(
     // Use a provider-specific multiplier because some providers (e.g., Mapbox terrain-rgb)
     // may have less pronounced elevation changes at the same sampling/resolution.
     let provider_height_mult: f64 = match provider {
-        TerrainProvider::Mapbox { .. } => 35.0, // amplify Mapbox heights to be more visible
+        TerrainProvider::Mapbox { .. } => 1.0, // Mapbox heights are already accurate, no amplification needed
         _ => 1.0,
     };
 
@@ -383,20 +491,22 @@ fn fetch_elevation_data_inner(
         eprintln!("Adjusted scaled range: {scaled_range:.1} blocks");
     }
 
-    // Convert to scaled Minecraft Y coordinates
-    for row in blurred_heights {
-        let mc_row: Vec<i32> = row
-            .iter()
-            .map(|&h| {
-                // Scale the height differences
-                let relative_height: f64 = (h - min_height) / height_range;
-                let scaled_height: f64 = relative_height * scaled_range;
-                // With terrain enabled, ground_level is used as the MIN_Y for terrain
-                ((ground_level as f64 + scaled_height).round() as i32).clamp(ground_level, MAX_Y)
-            })
-            .collect();
-        mc_heights.push(mc_row);
-    }
+    // Convert to scaled Minecraft Y coordinates (parallel)
+    let mc_heights: Vec<Vec<i32>> = blurred_heights
+        .par_iter()
+        .map(|row| {
+            row.iter()
+                .map(|&h| {
+                    // Scale the height differences
+                    let relative_height: f64 = (h - min_height) / height_range;
+                    let scaled_height: f64 = relative_height * scaled_range;
+                    // With terrain enabled, ground_level is used as the MIN_Y for terrain
+                    ((ground_level as f64 + scaled_height).round() as i32)
+                        .clamp(ground_level, MAX_Y)
+                })
+                .collect()
+        })
+        .collect();
 
     let mut min_block_height: i32 = i32::MAX;
     let mut max_block_height: i32 = i32::MIN;
@@ -436,49 +546,62 @@ fn apply_gaussian_blur(heights: &[Vec<f64>], sigma: f64) -> Vec<Vec<f64>> {
     // Apply blur
     let mut blurred: Vec<Vec<f64>> = heights.to_owned();
 
-    // Horizontal pass
-    for row in blurred.iter_mut() {
-        let mut temp: Vec<f64> = row.clone();
-        for (i, val) in temp.iter_mut().enumerate() {
+    // Horizontal pass (parallel)
+    blurred.par_iter_mut().for_each(|row| {
+        let original_row = row.clone();
+        for (i, val) in row.iter_mut().enumerate() {
             let mut sum: f64 = 0.0;
             let mut weight_sum: f64 = 0.0;
             for (j, k) in kernel.iter().enumerate() {
                 let idx: i32 = i as i32 + j as i32 - kernel_size as i32 / 2;
-                if idx >= 0 && idx < row.len() as i32 {
-                    sum += row[idx as usize] * k;
+                if idx >= 0 && idx < original_row.len() as i32 {
+                    sum += original_row[idx as usize] * k;
                     weight_sum += k;
                 }
             }
             *val = sum / weight_sum;
         }
-        *row = temp;
-    }
+    });
 
-    // Vertical pass
+    // Vertical pass (parallel)
     let height: usize = blurred.len();
     let width: usize = blurred[0].len();
-    for x in 0..width {
-        let temp: Vec<_> = blurred
-            .iter()
-            .take(height)
-            .map(|row: &Vec<f64>| row[x])
-            .collect();
 
-        for (y, row) in blurred.iter_mut().enumerate().take(height) {
-            let mut sum: f64 = 0.0;
-            let mut weight_sum: f64 = 0.0;
-            for (j, k) in kernel.iter().enumerate() {
-                let idx: i32 = y as i32 + j as i32 - kernel_size as i32 / 2;
-                if idx >= 0 && idx < height as i32 {
-                    sum += temp[idx as usize] * k;
-                    weight_sum += k;
-                }
-            }
-            row[x] = sum / weight_sum;
+    let vertical_blurred: Vec<Vec<f64>> = (0..width)
+        .into_par_iter()
+        .map(|x| {
+            let temp: Vec<_> = blurred
+                .iter()
+                .take(height)
+                .map(|row: &Vec<f64>| row[x])
+                .collect();
+
+            (0..height)
+                .map(|y| {
+                    let mut sum: f64 = 0.0;
+                    let mut weight_sum: f64 = 0.0;
+                    for (j, k) in kernel.iter().enumerate() {
+                        let idx: i32 = y as i32 + j as i32 - kernel_size as i32 / 2;
+                        if idx >= 0 && idx < height as i32 {
+                            sum += temp[idx as usize] * k;
+                            weight_sum += k;
+                        }
+                    }
+                    sum / weight_sum
+                })
+                .collect()
+        })
+        .collect();
+
+    // Transpose back to row-major order
+    let mut result = vec![vec![0.0; width]; height];
+    for y in 0..height {
+        for x in 0..width {
+            result[y][x] = vertical_blurred[x][y];
         }
     }
 
-    blurred
+    result
 }
 
 fn create_gaussian_kernel(size: usize, sigma: f64) -> Vec<f64> {
@@ -503,37 +626,59 @@ fn fill_nan_values(height_grid: &mut [Vec<f64>]) {
     let width: usize = height_grid[0].len();
 
     let mut changes_made: bool = true;
+    let mut iteration = 0;
+
     while changes_made {
         changes_made = false;
+        iteration += 1;
 
-        for y in 0..height {
-            for x in 0..width {
-                if height_grid[y][x].is_nan() {
-                    let mut sum: f64 = 0.0;
-                    let mut count: i32 = 0;
+        // Collect all NaN positions and calculate their interpolated values in parallel
+        let updates: Vec<(usize, usize, f64)> = (0..height)
+            .into_par_iter()
+            .flat_map(|y| {
+                let mut row_updates = Vec::new();
+                for x in 0..width {
+                    if height_grid[y][x].is_nan() {
+                        let mut sum: f64 = 0.0;
+                        let mut count: i32 = 0;
 
-                    // Check neighboring cells
-                    for dy in -1..=1 {
-                        for dx in -1..=1 {
-                            let ny: i32 = y as i32 + dy;
-                            let nx: i32 = x as i32 + dx;
+                        // Check neighboring cells
+                        for dy in -1..=1 {
+                            for dx in -1..=1 {
+                                let ny: i32 = y as i32 + dy;
+                                let nx: i32 = x as i32 + dx;
 
-                            if ny >= 0 && ny < height as i32 && nx >= 0 && nx < width as i32 {
-                                let val: f64 = height_grid[ny as usize][nx as usize];
-                                if !val.is_nan() {
-                                    sum += val;
-                                    count += 1;
+                                if ny >= 0 && ny < height as i32 && nx >= 0 && nx < width as i32 {
+                                    let val: f64 = height_grid[ny as usize][nx as usize];
+                                    if !val.is_nan() {
+                                        sum += val;
+                                        count += 1;
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    if count > 0 {
-                        height_grid[y][x] = sum / count as f64;
-                        changes_made = true;
+                        if count > 0 {
+                            row_updates.push((y, x, sum / count as f64));
+                        }
                     }
                 }
+                row_updates
+            })
+            .collect();
+
+        // Apply all updates
+        if !updates.is_empty() {
+            changes_made = true;
+            for (y, x, value) in updates {
+                height_grid[y][x] = value;
             }
+        }
+
+        // Limit iterations to prevent infinite loops on large NaN regions
+        if iteration > 1000 {
+            eprintln!("Warning: NaN interpolation stopped after 1000 iterations");
+            break;
         }
     }
 }
@@ -568,17 +713,21 @@ fn filter_elevation_outliers(height_grid: &mut [Vec<f64>]) {
 
     eprintln!("Filtering outliers outside range: {min_reasonable:.1}m to {max_reasonable:.1}m");
 
-    let mut outliers_filtered = 0;
-
-    // Replace outliers with NaN, then fill them using interpolation
-    for row in height_grid.iter_mut().take(height) {
-        for h in row.iter_mut().take(width) {
-            if !h.is_nan() && (*h < min_reasonable || *h > max_reasonable) {
-                *h = f64::NAN;
-                outliers_filtered += 1;
+    // Parallelize outlier filtering
+    let outliers_filtered: usize = height_grid
+        .par_iter_mut()
+        .take(height)
+        .map(|row| {
+            let mut row_outliers = 0;
+            for h in row.iter_mut().take(width) {
+                if !h.is_nan() && (*h < min_reasonable || *h > max_reasonable) {
+                    *h = f64::NAN;
+                    row_outliers += 1;
+                }
             }
-        }
-    }
+            row_outliers
+        })
+        .sum();
 
     if outliers_filtered > 0 {
         eprintln!("Filtered {outliers_filtered} elevation outliers, interpolating replacements...");
