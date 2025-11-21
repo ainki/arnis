@@ -8,6 +8,7 @@ use crate::floodfill::flood_fill_area;
 use crate::osm_parser::{ProcessedMemberRole, ProcessedRelation, ProcessedWay};
 use crate::world_editor::WorldEditor;
 use rand::Rng;
+use rayon::prelude::*;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -222,9 +223,15 @@ pub fn generate_buildings(
                 editor.set_block(roof_block, x, 5, z, None, None);
             }
 
-            // Flood fill the roof area
-            for (x, z) in roof_area.iter() {
-                editor.set_block(roof_block, *x, 5, *z, None, None);
+            // Flood fill the roof area - parallelize for large roofs
+            if roof_area.len() > 500 {
+                roof_area.par_iter().for_each(|(x, z)| {
+                    editor.set_block(roof_block, *x, 5, *z, None, None);
+                });
+            } else {
+                for (x, z) in roof_area.iter() {
+                    editor.set_block(roof_block, *x, 5, *z, None, None);
+                }
             }
 
             return;
@@ -244,9 +251,15 @@ pub fn generate_buildings(
                 // Use cached floor area instead of recalculating
                 let floor_area: &Vec<(i32, i32)> = &cached_floor_area;
 
-                // Fill the floor area
-                for (x, z) in floor_area.iter() {
-                    editor.set_block(ground_block, *x, 0, *z, None, None);
+                // Fill the floor area - parallelize for large areas
+                if floor_area.len() > 500 {
+                    floor_area.par_iter().for_each(|(x, z)| {
+                        editor.set_block(ground_block, *x, 0, *z, None, None);
+                    });
+                } else {
+                    for (x, z) in floor_area.iter() {
+                        editor.set_block(ground_block, *x, 0, *z, None, None);
+                    }
                 }
 
                 // Place fences and roof slabs at each corner node directly
@@ -307,12 +320,21 @@ pub fn generate_buildings(
                     }
                 }
 
-                // Fill the floor area for each level
-                for (x, z) in floor_area {
-                    if level == 0 {
-                        editor.set_block(SMOOTH_STONE, *x, current_level_y, *z, None, None);
-                    } else {
-                        editor.set_block(COBBLESTONE, *x, current_level_y, *z, None, None);
+                // Fill the floor area for each level - parallelize for large buildings
+                let block_type = if level == 0 {
+                    SMOOTH_STONE
+                } else {
+                    COBBLESTONE
+                };
+
+                // Only parallelize if floor area is large enough to benefit
+                if floor_area.len() > 1000 {
+                    floor_area.par_iter().for_each(|(x, z)| {
+                        editor.set_block(block_type, *x, current_level_y, *z, None, None);
+                    });
+                } else {
+                    for (x, z) in floor_area {
+                        editor.set_block(block_type, *x, current_level_y, *z, None, None);
                     }
                 }
             }

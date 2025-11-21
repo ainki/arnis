@@ -814,15 +814,14 @@ impl<'a> WorldEditor<'a> {
                 let mut ser_buffer = Vec::with_capacity(8192);
 
                 for entry in region.chunks.iter() {
-                    let chunk_x = entry.key().0;
-                    let chunk_z = entry.key().1;
+                    let (chunk_x, chunk_z) = entry.key();
                     let chunk_mutex = entry.value();
                     let chunk_to_modify = chunk_mutex.lock().unwrap();
 
                     if !chunk_to_modify.sections.is_empty() || !chunk_to_modify.other.is_empty() {
                         // Read existing chunk data if it exists
                         let existing_data = region_file
-                            .read_chunk(chunk_x as usize, chunk_z as usize)
+                            .read_chunk(*chunk_x as usize, *chunk_z as usize)
                             .unwrap()
                             .unwrap_or_default();
 
@@ -832,8 +831,8 @@ impl<'a> WorldEditor<'a> {
                         } else {
                             Chunk {
                                 sections: Vec::new(),
-                                x_pos: chunk_x + (region_x * 32),
-                                z_pos: chunk_z + (region_z * 32),
+                                x_pos: *chunk_x + (region_x * 32),
+                                z_pos: *chunk_z + (region_z * 32),
                                 is_light_on: 0,
                                 other: FnvHashMap::default(),
                             }
@@ -893,15 +892,15 @@ impl<'a> WorldEditor<'a> {
                         }
 
                         // Update chunk coordinates and flags
-                        chunk.x_pos = chunk_x + (region_x * 32);
-                        chunk.z_pos = chunk_z + (region_z * 32);
+                        chunk.x_pos = *chunk_x + (region_x * 32);
+                        chunk.z_pos = *chunk_z + (region_z * 32);
 
                         // Create Level wrapper and save
                         let level_data = create_level_wrapper(&chunk);
                         ser_buffer.clear();
                         fastnbt::to_writer(&mut ser_buffer, &level_data).unwrap();
                         region_file
-                            .write_chunk(chunk_x as usize, chunk_z as usize, &ser_buffer)
+                            .write_chunk(*chunk_x as usize, *chunk_z as usize, &ser_buffer)
                             .unwrap();
                     }
                 }
