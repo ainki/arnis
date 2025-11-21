@@ -170,7 +170,6 @@ pub fn generate_buildings(
     let min_z = element.nodes.iter().map(|n| n.z).min().unwrap_or(0);
     let max_z = element.nodes.iter().map(|n| n.z).max().unwrap_or(0);
 
-    let mut previous_node: Option<(i32, i32)> = None;
     let mut corner_addup: (i32, i32, i32) = (0, 0, 0);
 
     // Get building type for type-specific block selection
@@ -333,41 +332,76 @@ pub fn generate_buildings(
     let use_accent_lines = has_multiple_floors && rng.gen_bool(0.2);
     let use_vertical_accent = has_multiple_floors && !use_accent_lines && rng.gen_bool(0.1);
 
-    if let Some(amenity_type) = element.tags.get("amenity") {
-        if amenity_type == "shelter" {
-            let roof_block: Block = STONE_BRICK_SLAB;
+    let declared_levels_for_roof = element
+        .tags
+        .get("building:levels")
+        .or_else(|| element.tags.get("levels"))
+        .and_then(|value| parse_level_to_i32(value))
+        .unwrap_or(1);
 
-            // Use cached floor area instead of recalculating
-            let roof_area: &Vec<(i32, i32)> = &cached_floor_area;
+    let treat_as_open_shelter = element
+        .tags
+        .get("amenity")
+        .is_some_and(|amenity| amenity == "shelter")
+        || (building_type == "roof" && declared_levels_for_roof <= 1);
 
-            // Place fences and roof slabs at each corner node directly
-            for node in &element.nodes {
-                let x: i32 = node.x;
-                let z: i32 = node.z;
+    if treat_as_open_shelter {
+        let roof_block: Block = STONE_BRICK_SLAB;
 
-                for shelter_y in 1..=multiply_scale(4, scale_factor) {
-                    editor.set_block(OAK_FENCE, x, shelter_y, z, None, None);
-                }
-                editor.set_block(roof_block, x, 5, z, None, None);
+        // Use cached floor area instead of recalculating
+        let roof_area: &Vec<(i32, i32)> = &cached_floor_area;
+
+        // Place fences and roof slabs at each corner node directly
+        for node in &element.nodes {
+            let x: i32 = node.x;
+            let z: i32 = node.z;
+
+            for shelter_y in 1..=multiply_scale(4, scale_factor) {
+                editor.set_block(OAK_FENCE, x, shelter_y, z, None, None);
             }
-
-            // Flood fill the roof area - parallelize for large roofs
-            if roof_area.len() > 500 {
-                roof_area.par_iter().for_each(|(x, z)| {
-                    editor.set_block(roof_block, *x, 5, *z, None, None);
-                });
-            } else {
-                for (x, z) in roof_area.iter() {
-                    editor.set_block(roof_block, *x, 5, *z, None, None);
-                }
-            }
-
-            return;
+            editor.set_block(roof_block, x, 5, z, None, None);
         }
+
+        // Flood fill the roof area - parallelize for large roofs
+        if roof_area.len() > 500 {
+            roof_area.par_iter().for_each(|(x, z)| {
+                editor.set_block(roof_block, *x, 5, *z, None, None);
+            });
+        } else {
+            for (x, z) in roof_area.iter() {
+                editor.set_block(roof_block, *x, 5, *z, None, None);
+            }
+        }
+
+        return;
     }
 
     if let Some(building_type) = element.tags.get("building") {
-        if building_type == "garage" {
+        if building_type == "roof" {
+            let roof_type = element
+                .tags
+                .get("roof:shape")
+                .map(|value| roof_type_from_str(value))
+                .unwrap_or(RoofType::Flat);
+
+            let roof_vertical_offset = start_y_offset + building_height.max(1) - 1;
+
+            generate_roof(
+                editor,
+                element,
+                roof_vertical_offset,
+                0,
+                floor_block,
+                wall_block,
+                accent_block,
+                roof_type,
+                &cached_floor_area,
+                abs_terrain_offset,
+                args,
+            );
+
+            return;
+        } else if building_type == "garage" {
             building_height = ((2.0 * scale_factor) as i32).max(3);
         } else if building_type == "shed" {
             building_height = ((2.0 * scale_factor) as i32).max(3);
@@ -511,40 +545,6 @@ pub fn generate_buildings(
                     }
                     prev_outline = Some((x, z));
                 }
-            }
-
-            return;
-        } else if building_type == "roof" && !element.tags.contains_key("roof:shape") {
-            let roof_height: i32 = 5;
-
-            // Iterate through the nodes to create the roof edges using Bresenham's line algorithm
-            for node in &element.nodes {
-                let x: i32 = node.x;
-                let z: i32 = node.z;
-
-                if let Some(prev) = previous_node {
-                    let bresenham_points: Vec<(i32, i32, i32)> =
-                        bresenham_line(prev.0, roof_height, prev.1, x, roof_height, z);
-                    for (bx, _, bz) in bresenham_points {
-                        editor.set_block(STONE_BRICK_SLAB, bx, roof_height, bz, None, None);
-                        // Set roof block at edge
-                    }
-                }
-
-                for y in 1..=(roof_height - 1) {
-                    editor.set_block(COBBLESTONE_WALL, x, y, z, None, None);
-                }
-
-                previous_node = Some((x, z));
-            }
-
-            // Use cached floor area
-            let roof_area: &Vec<(i32, i32)> = &cached_floor_area;
-
-            // Fill the interior of the roof with STONE_BRICK_SLAB
-            for (x, z) in roof_area.iter() {
-                editor.set_block(STONE_BRICK_SLAB, *x, roof_height, *z, None, None);
-                // Set roof block
             }
 
             return;
