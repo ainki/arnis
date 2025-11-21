@@ -30,19 +30,41 @@ pub fn generate_buildings(
     args: &Args,
     relation_levels: Option<i32>,
 ) {
-    // Get min_level first so we can use it both for start_level and building height calculations
-    let min_level = if let Some(min_level_str) = element.tags.get("building:min_level") {
-        min_level_str.parse::<i32>().unwrap_or(0)
-    } else {
-        0
-    };
+    let is_building_part = element.tags.contains_key("building:part");
+
+    // Get min_level (or equivalent) first so we can use it both for start_level and building height calculations
+    let min_level = element
+        .tags
+        .get("building:min_level")
+        .or_else(|| element.tags.get("min_level"))
+        .or_else(|| {
+            if is_building_part {
+                element.tags.get("level")
+            } else {
+                None
+            }
+        })
+        .and_then(|value| parse_level_to_i32(value))
+        .unwrap_or(0);
+
+    let scale_factor = args.scale;
+
+    let min_level_offset = multiply_scale(min_level * 4, scale_factor);
+
+    let min_height_meters = element
+        .tags
+        .get("building:min_height")
+        .or_else(|| element.tags.get("min_height"))
+        .and_then(|value| parse_height_to_f64(value));
+
+    let min_height_offset = min_height_meters
+        .map(|meters| (meters * scale_factor).floor() as i32)
+        .unwrap_or(0);
+
+    let elevation_offset = min_level_offset.max(min_height_offset);
 
     // Calculate y-offset for non-terrain mode for absolute positioning
     let abs_terrain_offset = if !args.terrain { args.ground_level } else { 0 };
-
-    // Calculate starting y-offset from min_level
-    let scale_factor = args.scale;
-    let min_level_offset = multiply_scale(min_level * 4, scale_factor);
 
     // Cache floodfill result: compute once and reuse throughout
     let polygon_coords: Vec<(i32, i32)> = element.nodes.iter().map(|n| (n.x, n.z)).collect();
@@ -74,18 +96,17 @@ pub fn generate_buildings(
 
         // If we have no samples, fall back to provided ground level
         if levels.is_empty() {
-            args.ground_level + min_level_offset
+            args.ground_level + elevation_offset
         } else {
-
-        // Use the minimum ground level across the footprint so buildings rest on the lowest sampled point
-        let min_sample = *levels.iter().min().unwrap();
+            // Use the minimum ground level across the footprint so buildings rest on the lowest sampled point
+            let min_sample = *levels.iter().min().unwrap();
 
             // Use the minimum sampled level + min_level offset as the fixed base for the entire building
-            min_sample + min_level_offset
+            min_sample + elevation_offset
         }
     } else {
-        // When terrain is disabled, just use min_level_offset
-        min_level_offset
+        // When terrain is disabled, just use the precomputed offset
+        elevation_offset
     };
 
     // Calculate building bounds and floor area before processing interior
@@ -129,6 +150,7 @@ pub fn generate_buildings(
     let mut processed_points: HashSet<(i32, i32)> = HashSet::new();
     let mut building_height: i32 = ((6.0 * scale_factor) as i32).max(3); // Default building height with scale and minimum
     let mut is_tall_building = false;
+    let mut has_explicit_levels = false;
     let mut rng = rand::thread_rng();
     let use_vertical_windows = rng.gen_bool(0.7);
     let use_accent_roof_line = rng.gen_bool(0.25);
@@ -158,32 +180,55 @@ pub fn generate_buildings(
     }
 
     // Determine building height from tags
-    if let Some(levels_str) = element.tags.get("building:levels") {
-        if let Ok(levels) = levels_str.parse::<i32>() {
-            let lev = levels - min_level;
+    if let Some(levels_total) = element
+        .tags
+        .get("building:levels")
+        .or_else(|| element.tags.get("levels"))
+        .and_then(|value| parse_level_to_i32(value))
+    {
+        has_explicit_levels = true;
+        if levels_total >= 1 {
+            let effective_levels = if is_building_part {
+                (levels_total - min_level).max(1)
+            } else {
+                levels_total
+            };
 
-            if lev >= 1 {
-                // Use declared building levels directly (match OSM data)
-                building_height = multiply_scale(levels * 4 + 2, scale_factor);
-                building_height = building_height.max(3);
+            // Use declared building levels directly (match OSM data)
+            building_height = multiply_scale(effective_levels * 4 + 2, scale_factor);
+            building_height = building_height.max(3);
 
-                // Mark as tall building if more than 7 stories
-                if levels > 7 {
-                    is_tall_building = true;
-                }
+            // Mark as tall building if more than 7 stories (use effective floors)
+            if effective_levels > 7 {
+                is_tall_building = true;
             }
         }
     }
 
     // building_levels_opt removed (no longer used)
 
-    if let Some(height_str) = element.tags.get("height") {
-        if let Ok(height) = height_str.trim_end_matches("m").trim().parse::<f64>() {
-            building_height = (height * scale_factor) as i32;
+    if !has_explicit_levels {
+        if let Some(height_meters) = element
+            .tags
+            .get("building:height")
+            .or_else(|| element.tags.get("height"))
+            .and_then(|value| parse_height_to_f64(value))
+        {
+            let mut effective_height = height_meters;
+            if is_building_part {
+                if let Some(min_h) = min_height_meters {
+                    effective_height = (height_meters - min_h).max(1.0);
+                } else if min_level > 0 {
+                    let approximate_base = (min_level * 4) as f64;
+                    effective_height = (height_meters - approximate_base).max(1.0);
+                }
+            }
+
+            building_height = (effective_height * scale_factor).floor() as i32;
             building_height = building_height.max(3);
 
             // Mark as tall building if height suggests more than 7 stories
-            if height > 28.0 {
+            if effective_height > 28.0 {
                 is_tall_building = true;
             }
         }
@@ -448,7 +493,7 @@ pub fn generate_buildings(
             for (bx, _, bz) in bresenham_points {
                 // Create foundation pillars from ground up to building base if needed
                 // Only create foundations for buildings without min_level (elevated buildings shouldn't have foundations)
-                if args.terrain && min_level == 0 {
+                if args.terrain && min_level == 0 && min_height_offset == 0 {
                     // Calculate actual ground level at this position
                     let local_ground_level = if let Some(ground) = editor.get_ground() {
                         ground.level(XZPoint::new(
@@ -776,6 +821,27 @@ fn multiply_scale(value: i32, scale_factor: f64) -> i32 {
         let result = (value as f64) * scale_factor;
         result.floor() as i32
     }
+}
+
+fn parse_level_to_i32(value: &str) -> Option<i32> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    trimmed
+        .parse::<i32>()
+        .ok()
+        .or_else(|| trimmed.parse::<f64>().ok().map(|num| num.floor() as i32))
+}
+
+fn parse_height_to_f64(value: &str) -> Option<f64> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    normalized.trim_end_matches('m').trim().parse::<f64>().ok()
 }
 
 /// Unified function to generate various roof types

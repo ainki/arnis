@@ -108,6 +108,7 @@ pub struct ProcessedWay {
 pub enum ProcessedMemberRole {
     Outer,
     Inner,
+    Part,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -270,8 +271,13 @@ pub fn parse_osm_data(
         .filter_map(|element| {
             let tags = element.tags.as_ref()?;
 
-            // Only process multipolygons for now
-            if tags.get("type").map(|x: &String| x.as_str()) != Some("multipolygon") {
+            let relation_type = tags.get("type").map(|x: &String| x.as_str());
+            let is_building_relation = relation_type == Some("building")
+                || tags.contains_key("building")
+                || tags.contains_key("building:part");
+
+            // Only process multipolygon and building relations for now
+            if relation_type != Some("multipolygon") && relation_type != Some("building") {
                 return None;
             }
 
@@ -284,9 +290,13 @@ pub fn parse_osm_data(
                         return None;
                     }
 
-                    let role = match mem.role.as_str() {
-                        "outer" => ProcessedMemberRole::Outer,
+                    let role_key = mem.role.trim().to_ascii_lowercase();
+
+                    let role = match role_key.as_str() {
+                        "outer" | "outline" => ProcessedMemberRole::Outer,
                         "inner" => ProcessedMemberRole::Inner,
+                        "part" => ProcessedMemberRole::Part,
+                        _ if is_building_relation => ProcessedMemberRole::Outer,
                         _ => return None,
                     };
 

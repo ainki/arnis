@@ -111,11 +111,13 @@ pub fn fetch_data_from_overpass(
         vec!["https://maps.mail.ru/osm/tools/overpass/api/interpreter"];
     let mut url: &&str = api_servers.choose(&mut rand::thread_rng()).unwrap();
 
-    // Generate Overpass API query for bounding box
+    // Generate Overpass API query for bounding box. Include relations that only set type=building so
+    // outline-skipping logic still sees their members.
     let query: String = format!(
         r#"[out:json][timeout:360][bbox:{},{},{},{}];
     (
         nwr["building"];
+        rel["type"="building"];
         nwr["highway"];
         nwr["landuse"];
         nwr["natural"];

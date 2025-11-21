@@ -774,18 +774,17 @@ fn gui_start_generation(
 
             // Build terrain provider enum from GUI input (default to AWS)
             let provider_enum = match terrain_provider.as_deref() {
-                Some(s) if s == "mapbox" => {
-                    crate::elevation_data::TerrainProvider::Mapbox {
-                        token: mapbox_token.clone().unwrap_or_default(),
-                    }
-                }
+                Some(s) if s == "mapbox" => crate::elevation_data::TerrainProvider::Mapbox {
+                    token: mapbox_token.clone().unwrap_or_default(),
+                },
                 _ => crate::elevation_data::TerrainProvider::Aws,
             };
 
             // If skip_osm_objects is true (terrain-only mode), skip fetching and processing OSM data
             if skip_osm_objects {
                 // Generate ground data (terrain) for terrain-only mode
-                let ground = ground::generate_ground_data_with_provider(&args, Some(provider_enum.clone()));
+                let ground =
+                    ground::generate_ground_data_with_provider(&args, Some(provider_enum.clone()));
 
                 // Create empty parsed_elements and xzbbox for terrain-only mode
                 let parsed_elements = Vec::new();
@@ -822,7 +821,10 @@ fn gui_start_generation(
                         }
                     });
 
-                    let mut ground = ground::generate_ground_data_with_provider(&args, Some(provider_enum.clone()));
+                    let mut ground = ground::generate_ground_data_with_provider(
+                        &args,
+                        Some(provider_enum.clone()),
+                    );
 
                     // Transform map (parsed_elements). Operations are defined in a json file
                     map_transformation::transform_map(
