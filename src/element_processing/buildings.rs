@@ -9,7 +9,7 @@ use crate::osm_parser::{ProcessedMemberRole, ProcessedRelation, ProcessedWay};
 use crate::world_editor::WorldEditor;
 use rand::Rng;
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 /// Enum representing different roof types
@@ -21,6 +21,12 @@ enum RoofType {
     Pyramidal, // All sides come to a point at the top
     Dome,   // Rounded, hemispherical structure
     Flat,   // Default flat roof
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoofOrientationHint {
+    Along,
+    Across,
 }
 
 #[inline]
@@ -455,7 +461,7 @@ pub fn generate_buildings(
             }
 
             return;
-        } else if building_type == "roof" {
+        } else if building_type == "roof" && !element.tags.contains_key("roof:shape") {
             let roof_height: i32 = 5;
 
             // Iterate through the nodes to create the roof edges using Bresenham's line algorithm
@@ -768,12 +774,18 @@ pub fn generate_buildings(
     // Process roof shapes if specified and roof generation is enabled
     if args.roof {
         if let Some(roof_shape) = element.tags.get("roof:shape") {
-            let roof_type = match roof_shape.as_str() {
-                "gabled" => RoofType::Gabled,
-                "hipped" | "half-hipped" | "gambrel" | "mansard" | "round" => RoofType::Hipped,
-                "skillion" => RoofType::Skillion,
-                "pyramidal" => RoofType::Pyramidal,
-                "dome" | "onion" | "cone" => RoofType::Dome,
+            let normalized = roof_shape.to_ascii_lowercase();
+            let roof_type = match normalized.as_str() {
+                "flat" => RoofType::Flat,
+                "gabled" | "gambrel" | "saltbox" | "mansard" | "clipped_gable" => {
+                    RoofType::Gabled
+                }
+                "hipped" | "half-hipped" | "halfhipped" | "jerkinhead" => RoofType::Hipped,
+                "skillion" | "shed" | "lean_to" | "lean-to" | "leanto" | "sawtooth" => {
+                    RoofType::Skillion
+                }
+                "pyramidal" | "pavilion" | "cone" | "conical" | "tent" => RoofType::Pyramidal,
+                "dome" | "onion" | "round" | "vault" => RoofType::Dome,
                 _ => RoofType::Flat,
             };
 
@@ -788,8 +800,9 @@ pub fn generate_buildings(
                 roof_type,
                 &cached_floor_area,
                 abs_terrain_offset,
+                args,
             );
-        } else {
+        } else if !is_building_part {
             // Handle buildings without explicit roof:shape tag
             let building_type = element
                 .tags
@@ -797,12 +810,28 @@ pub fn generate_buildings(
                 .map(|s| s.as_str())
                 .unwrap_or("yes");
 
-            // For apartments, give 80% chance to generate a gabled roof only if building footprint is not too large
-            if building_type == "apartments"
-                || building_type == "residential"
-                || building_type == "house"
-                || building_type == "yes"
-            {
+            // Estimate number of floors from the generated height (≈4 blocks per floor)
+            let approx_levels = ((building_height as f64)
+                / (4.0 * args.scale.max(0.1)))
+                .ceil() as i32;
+
+            let is_low_rise_residential = approx_levels <= 3
+                && matches!(
+                    building_type,
+                    "house"
+                        | "detached"
+                        | "semi_detached"
+                        | "semidetached_house"
+                        | "terrace"
+                        | "hut"
+                        | "cabin"
+                        | "bungalow"
+                        | "farm"
+                        | "residential"
+                        | "yes"
+                );
+
+            if is_low_rise_residential {
                 // Use cached footprint area and size instead of recalculating
                 let footprint_size = cached_footprint_size;
 
@@ -822,6 +851,7 @@ pub fn generate_buildings(
                         RoofType::Gabled,
                         &cached_floor_area,
                         abs_terrain_offset,
+                        args,
                     );
                 }
                 // If footprint too large or not selected for gabled roof, building gets default flat roof (no action needed)
@@ -882,7 +912,12 @@ fn generate_roof(
     roof_type: RoofType,
     cached_floor_area: &[(i32, i32)],
     abs_terrain_offset: i32,
+    args: &Args,
 ) {
+    let roof_height_override = parse_roof_height(&element.tags, args.scale);
+    let roof_direction_vector = parse_roof_direction(&element.tags).map(direction_to_vector);
+    let roof_orientation_hint = parse_roof_orientation_hint(&element.tags);
+
     // Use the provided cached floor area instead of recalculating
     let floor_area = cached_floor_area;
 
@@ -908,15 +943,18 @@ fn generate_roof(
     match roof_type {
         RoofType::Flat => {
             // Simple flat roof
+            let flat_layers = roof_height_override.unwrap_or(1).max(1);
             for &(x, z) in floor_area {
-                editor.set_block_absolute(
-                    floor_block,
-                    x,
-                    base_height + abs_terrain_offset,
-                    z,
-                    None,
-                    None,
-                );
+                for layer in 0..flat_layers {
+                    editor.set_block_absolute(
+                        floor_block,
+                        x,
+                        base_height + layer + abs_terrain_offset,
+                        z,
+                        None,
+                        None,
+                    );
+                }
             }
         }
 
@@ -926,16 +964,29 @@ fn generate_roof(
             let length = max_z - min_z;
             let building_size = width.max(length);
 
-            // Enhanced logarithmic scaling with increased base values for taller roofs
-            let roof_height_boost = (3.0 + (building_size as f64 * 0.15).ln().max(1.0)) as i32;
+            let default_height = (3.0 + (building_size as f64 * 0.15).ln().max(1.0)) as i32;
+            let roof_height_boost = roof_height_override.unwrap_or(default_height).max(2);
             let roof_peak_height = base_height + roof_height_boost;
 
             // Pre-determine orientation and material
-            let is_wider_than_long = width > length;
+            let long_axis_is_x = width >= length;
+            let mut is_wider_than_long = width > length;
+            if let Some((dir_x, dir_z)) = roof_direction_vector {
+                if dir_z.abs() > dir_x.abs() {
+                    is_wider_than_long = true;
+                } else if dir_x.abs() > dir_z.abs() {
+                    is_wider_than_long = false;
+                }
+            } else if let Some(hint) = roof_orientation_hint {
+                is_wider_than_long = match hint {
+                    RoofOrientationHint::Along => long_axis_is_x,
+                    RoofOrientationHint::Across => !long_axis_is_x,
+                };
+            }
             let max_distance = if is_wider_than_long {
-                length >> 1
+                (length >> 1).max(1)
             } else {
-                width >> 1
+                (width >> 1).max(1)
             };
 
             // 50% accent block, otherwise wall block for roof
@@ -1052,10 +1103,25 @@ fn generate_roof(
             // Determine if building is significantly rectangular or more square-shaped
             let is_rectangular =
                 (width as f64 / length as f64 > 1.3) || (length as f64 / width as f64 > 1.3);
-            let long_axis_is_x = width > length;
+            let mut long_axis_is_x = width >= length;
+            if let Some((dir_x, dir_z)) = roof_direction_vector {
+                if dir_x.abs() > dir_z.abs() {
+                    long_axis_is_x = true;
+                } else if dir_z.abs() > dir_x.abs() {
+                    long_axis_is_x = false;
+                }
+            }
+            if let Some(hint) = roof_orientation_hint {
+                long_axis_is_x = match hint {
+                    RoofOrientationHint::Along => long_axis_is_x,
+                    RoofOrientationHint::Across => !long_axis_is_x,
+                };
+            }
 
             // Make roof taller and more pointy
-            let roof_peak_height = base_height + if width.max(length) > 20 { 7 } else { 5 };
+            let default_peak = if width.max(length) > 20 { 7 } else { 5 };
+            let roof_rise = roof_height_override.unwrap_or(default_peak).max(3);
+            let roof_peak_height = base_height + roof_rise;
 
             // 50% accent block, otherwise wall block for roof
             let mut rng = rand::thread_rng();
@@ -1068,7 +1134,7 @@ fn generate_roof(
             // Find the building's approximate center line along the long axis
             if is_rectangular {
                 // First pass: calculate all roof heights
-                let mut roof_heights = std::collections::HashMap::new();
+                let mut roof_heights = HashMap::new();
 
                 for &(x, z) in floor_area {
                     // Calculate distance to the ridge line
@@ -1188,7 +1254,7 @@ fn generate_roof(
                 // For more complex or square buildings, use distance from center approach
 
                 // First pass: calculate all roof heights based on distance from center
-                let mut roof_heights = std::collections::HashMap::new();
+                let mut roof_heights = HashMap::new();
 
                 for &(x, z) in floor_area {
                     // Calculate distance from center point
@@ -1316,11 +1382,39 @@ fn generate_roof(
 
         RoofType::Skillion => {
             // Skillion roof - single sloping surface
-            let width = (max_x - min_x).max(1);
             let building_size = (max_x - min_x).max(max_z - min_z);
 
-            // Scale roof height based on building size (4-10 blocks)
-            let max_roof_height = (building_size / 3).clamp(4, 10);
+            // Scale roof height based on building size (4-10 blocks) unless explicitly specified
+            let default_roof_height = (building_size / 3).clamp(4, 10);
+            let roof_rise = roof_height_override.unwrap_or(default_roof_height).max(2);
+
+            // Determine slope axis from roof:direction or fall back to dominant building axis
+            let fallback_axis = if (max_x - min_x) >= (max_z - min_z) {
+                (1.0, 0.0)
+            } else {
+                (0.0, 1.0)
+            };
+            let slope_axis = roof_direction_vector.unwrap_or(fallback_axis);
+            let stair_facing = facing_from_axis(slope_axis);
+
+            // Precompute min/max projection along the slope axis
+            let mut min_proj = f64::INFINITY;
+            let mut max_proj = f64::NEG_INFINITY;
+            for &(x, z) in floor_area {
+                let proj = project_onto_axis(x, z, slope_axis);
+                min_proj = min_proj.min(proj);
+                max_proj = max_proj.max(proj);
+            }
+            let proj_range = (max_proj - min_proj).max(1.0);
+
+            // First pass: calculate all roof heights
+            let mut roof_heights = HashMap::new();
+            for &(x, z) in floor_area {
+                let proj = project_onto_axis(x, z, slope_axis);
+                let slope_progress = ((proj - min_proj) / proj_range).clamp(0.0, 1.0);
+                let roof_height = base_height + (slope_progress * roof_rise as f64) as i32;
+                roof_heights.insert((x, z), roof_height);
+            }
 
             // 50% accent block, otherwise wall block for roof
             let mut rng = rand::thread_rng();
@@ -1329,14 +1423,6 @@ fn generate_roof(
             } else {
                 wall_block
             };
-
-            // First pass: calculate all roof heights
-            let mut roof_heights = std::collections::HashMap::new();
-            for &(x, z) in floor_area {
-                let slope_progress = (x - min_x) as f64 / width as f64;
-                let roof_height = base_height + (slope_progress * max_roof_height as f64) as i32;
-                roof_heights.insert((x, z), roof_height);
-            }
 
             // Second pass: place blocks with stairs only where height increases
             for &(x, z) in floor_area {
@@ -1357,11 +1443,12 @@ fn generate_roof(
                         if has_lower_neighbor {
                             // Place stairs at height transitions for a stepped appearance
                             let stair_block_material = get_stair_block_for_material(roof_block);
-                            let stair_block_with_props = create_stair_with_properties(
-                                stair_block_material,
-                                StairFacing::East,
-                                StairShape::Straight,
-                            );
+                            let stair_block_with_props =
+                                create_stair_with_properties(
+                                    stair_block_material,
+                                    stair_facing,
+                                    StairShape::Straight,
+                                );
                             editor.set_block_with_properties_absolute(
                                 stair_block_with_props,
                                 x,
@@ -1401,7 +1488,9 @@ fn generate_roof(
             let building_size = (max_x - min_x).max(max_z - min_z);
 
             // Calculate peak height based on building size (taller peak for larger buildings)
-            let peak_height = base_height + (building_size / 3).clamp(3, 8);
+            let default_peak = (building_size / 3).clamp(3, 8);
+            let roof_rise = roof_height_override.unwrap_or(default_peak).max(2);
+            let peak_height = base_height + roof_rise;
 
             // 50% accent block, otherwise wall block for roof
             let mut rng = rand::thread_rng();
@@ -1412,7 +1501,7 @@ fn generate_roof(
             };
 
             // First pass: calculate all roof heights
-            let mut roof_heights = std::collections::HashMap::new();
+            let mut roof_heights = HashMap::new();
             for &(x, z) in floor_area {
                 // Calculate distance from this point to the center
                 let dx = (x - center_x).abs() as f64;
@@ -1588,7 +1677,7 @@ fn generate_roof(
 
         RoofType::Dome => {
             // Dome roof - rounded hemispherical structure
-            let radius = ((max_x - min_x).max(max_z - min_z) / 2) as f64;
+            let radius = ((max_x - min_x).max(max_z - min_z).max(2) / 2) as f64;
 
             // 50% accent block, otherwise wall block for roof
             let mut rng = rand::thread_rng();
@@ -1598,13 +1687,18 @@ fn generate_roof(
                 wall_block
             };
 
+            let default_height = (radius * 0.8).max(2.0);
+            let dome_height = roof_height_override
+                .map(|h| h.max(2) as f64)
+                .unwrap_or(default_height);
+
             for &(x, z) in floor_area {
                 let distance_from_center = ((x - center_x).pow(2) + (z - center_z).pow(2)) as f64;
                 let normalized_distance = (distance_from_center.sqrt() / radius).min(1.0);
 
                 // Use hemisphere equation to determine the height
                 let height_factor = (1.0 - normalized_distance * normalized_distance).sqrt();
-                let surface_height = base_height + (height_factor * (radius * 0.8)) as i32;
+                let surface_height = base_height + (height_factor * dome_height) as i32;
 
                 // Fill from the base to the surface
                 for y in base_height..=surface_height {
@@ -1612,6 +1706,114 @@ fn generate_roof(
                 }
             }
         }
+    }
+}
+
+fn parse_roof_height(tags: &HashMap<String, String>, scale_factor: f64) -> Option<i32> {
+    if let Some(value) = tags.get("roof:height") {
+        if let Some(height_meters) = parse_height_to_f64(value) {
+            let scaled = (height_meters * scale_factor).floor() as i32;
+            if scaled > 0 {
+                return Some(scaled.max(1));
+            }
+        }
+    }
+
+    if let Some(levels_value) = tags.get("roof:levels") {
+        if let Ok(levels) = levels_value.trim().parse::<i32>() {
+            if levels > 0 {
+                return Some(multiply_scale(levels * 4, scale_factor).max(1));
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_roof_direction(tags: &HashMap<String, String>) -> Option<f64> {
+    let raw = tags
+        .get("roof:direction")
+        .or_else(|| tags.get("direction"))?
+        .trim()
+        .trim_end_matches('°')
+        .to_string();
+
+    if raw.is_empty() {
+        return None;
+    }
+
+    if let Ok(angle) = raw.parse::<f64>() {
+        if angle.is_finite() {
+            let mut normalized = angle % 360.0;
+            if normalized < 0.0 {
+                normalized += 360.0;
+            }
+            return Some(normalized);
+        }
+    }
+
+    let uppercase = raw
+        .replace('-', "")
+        .replace('_', "")
+        .to_uppercase();
+    match uppercase.as_str() {
+        "N" | "NORTH" => Some(0.0),
+        "NNE" => Some(22.5),
+        "NE" | "NORTHEAST" => Some(45.0),
+        "ENE" => Some(67.5),
+        "E" | "EAST" => Some(90.0),
+        "ESE" => Some(112.5),
+        "SE" | "SOUTHEAST" => Some(135.0),
+        "SSE" => Some(157.5),
+        "S" | "SOUTH" => Some(180.0),
+        "SSW" => Some(202.5),
+        "SW" | "SOUTHWEST" => Some(225.0),
+        "WSW" => Some(247.5),
+        "W" | "WEST" => Some(270.0),
+        "WNW" => Some(292.5),
+        "NW" | "NORTHWEST" => Some(315.0),
+        "NNW" => Some(337.5),
+        _ => None,
+    }
+}
+
+fn parse_roof_orientation_hint(tags: &HashMap<String, String>) -> Option<RoofOrientationHint> {
+    tags.get("roof:orientation").and_then(|value| {
+        match value.trim().to_lowercase().as_str() {
+            "along" | "parallel" => Some(RoofOrientationHint::Along),
+            "across" | "perpendicular" => Some(RoofOrientationHint::Across),
+            _ => None,
+        }
+    })
+}
+
+fn direction_to_vector(angle_deg: f64) -> (f64, f64) {
+    // Flip 180 degrees so ridge orientation matches in-game expectations
+    let corrected_angle = (angle_deg + 180.0) % 360.0;
+    // In OSM, 0 degrees points to geographic north. In Minecraft's coordinate system,
+    // decreasing Z heads north. Map accordingly and normalize the vector for robustness.
+    let radians = corrected_angle.to_radians();
+    let dx = radians.sin();
+    let dz = -radians.cos();
+    let length = (dx * dx + dz * dz).sqrt().max(1e-6);
+    (dx / length, dz / length)
+}
+
+fn project_onto_axis(x: i32, z: i32, axis: (f64, f64)) -> f64 {
+    x as f64 * axis.0 + z as f64 * axis.1
+}
+
+fn facing_from_axis(axis: (f64, f64)) -> StairFacing {
+    if axis.0.abs() >= axis.1.abs() {
+        if axis.0 >= 0.0 {
+            StairFacing::East
+        } else {
+            StairFacing::West
+        }
+    } else if axis.1 >= 0.0 {
+        StairFacing::South
+    } else {
+        StairFacing::North
     }
 }
 
