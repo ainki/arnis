@@ -44,6 +44,7 @@ pub fn generate_buildings(
     hole_polygons: Option<&[HolePolygon<'_>]>,
 ) {
     let is_building_part = element.tags.contains_key("building:part");
+    let is_roof_part = is_roof_building_part(&element.tags);
 
     // Get min_level (or equivalent) first so we can use it both for start_level and building height calculations
     let min_level = element
@@ -278,6 +279,35 @@ pub fn generate_buildings(
         if levels > 7 {
             is_tall_building = true;
         }
+    }
+
+    if is_roof_part {
+        let roof_type = element
+            .tags
+            .get("roof:shape")
+            .map(|value| roof_type_from_str(value))
+            .unwrap_or(RoofType::Flat);
+
+        // Keep the previously computed building height to anchor the roof at the
+        // part's top (e.g. roof sitting on top of lower floors). When no height
+        // metadata exists this defaults to a small positive offset.
+        let roof_vertical_offset = start_y_offset + building_height.max(1) - 1;
+
+        generate_roof(
+            editor,
+            element,
+            roof_vertical_offset,
+            0,
+            floor_block,
+            wall_block,
+            accent_block,
+            roof_type,
+            &cached_floor_area,
+            abs_terrain_offset,
+            args,
+        );
+
+        return;
     }
 
     // Determine accent line usage based on whether building has multiple floors
@@ -703,20 +733,7 @@ pub fn generate_buildings(
     // Process roof shapes if specified and roof generation is enabled
     if args.roof {
         if let Some(roof_shape) = element.tags.get("roof:shape") {
-            let normalized = roof_shape.to_ascii_lowercase();
-            let roof_type = match normalized.as_str() {
-                "flat" => RoofType::Flat,
-                "gabled" | "gambrel" | "saltbox" | "mansard" | "clipped_gable" => {
-                    RoofType::Gabled
-                }
-                "hipped" | "half-hipped" | "halfhipped" | "jerkinhead" => RoofType::Hipped,
-                "skillion" | "shed" | "lean_to" | "lean-to" | "leanto" | "sawtooth" => {
-                    RoofType::Skillion
-                }
-                "pyramidal" | "pavilion" | "cone" | "conical" | "tent" => RoofType::Pyramidal,
-                "dome" | "onion" | "round" | "vault" => RoofType::Dome,
-                _ => RoofType::Flat,
-            };
+            let roof_type = roof_type_from_str(roof_shape);
 
             generate_roof(
                 editor,
@@ -963,6 +980,29 @@ fn parse_height_to_f64(value: &str) -> Option<f64> {
     }
 
     normalized.trim_end_matches('m').trim().parse::<f64>().ok()
+}
+
+fn is_roof_building_part(tags: &HashMap<String, String>) -> bool {
+    tags
+        .get("building:part")
+        .map(|value| {
+            value
+                .split(|c| matches!(c, ';' | ','))
+                .any(|token| token.trim().eq_ignore_ascii_case("roof"))
+        })
+        .unwrap_or(false)
+}
+
+fn roof_type_from_str(value: &str) -> RoofType {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "flat" => RoofType::Flat,
+        "gabled" | "gambrel" | "saltbox" | "mansard" | "clipped_gable" => RoofType::Gabled,
+        "hipped" | "half-hipped" | "halfhipped" | "jerkinhead" => RoofType::Hipped,
+        "skillion" | "shed" | "lean_to" | "lean-to" | "leanto" | "sawtooth" => RoofType::Skillion,
+        "pyramidal" | "pavilion" | "cone" | "conical" | "tent" => RoofType::Pyramidal,
+        "dome" | "onion" | "round" | "vault" => RoofType::Dome,
+        _ => RoofType::Flat,
+    }
 }
 
 /// Unified function to generate various roof types
