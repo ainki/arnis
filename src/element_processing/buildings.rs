@@ -546,26 +546,32 @@ pub fn generate_buildings(
         }
     }
 
+    let suppress_outer_walls = hole_polygons
+        .map(|holes| holes.iter().any(|hole| !hole.add_walls))
+        .unwrap_or(false);
+
     // Process nodes to create walls and corners (outer shell)
-    build_wall_ring(
-        &element.nodes,
-        editor,
-        args,
-        wall_block,
-        window_block,
-        accent_block,
-        start_y_offset,
-        building_height,
-        is_tall_building,
-        use_vertical_windows,
-        use_accent_roof_line,
-        use_accent_lines,
-        use_vertical_accent,
-        min_level,
-        min_height_offset,
-        abs_terrain_offset,
-        &mut corner_addup,
-    );
+    if !suppress_outer_walls {
+        build_wall_ring(
+            &element.nodes,
+            editor,
+            args,
+            wall_block,
+            window_block,
+            accent_block,
+            start_y_offset,
+            building_height,
+            is_tall_building,
+            use_vertical_windows,
+            use_accent_roof_line,
+            use_accent_lines,
+            use_vertical_accent,
+            min_level,
+            min_height_offset,
+            abs_terrain_offset,
+            &mut corner_addup,
+        );
+    }
 
     // Add inner courtyard walls for multipolygon holes and building parts
     if let Some(hole_polygons) = hole_polygons {
@@ -597,7 +603,7 @@ pub fn generate_buildings(
     }
 
     // Flood-fill interior with floor variation
-    if corner_addup != (0, 0, 0) {
+    {
         // Use cached floor area
         let floor_area: &Vec<(i32, i32)> = &cached_floor_area;
 
