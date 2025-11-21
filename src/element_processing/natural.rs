@@ -7,7 +7,7 @@ use crate::osm_parser::{ProcessedElement, ProcessedMemberRole, ProcessedRelation
 use crate::world_editor::WorldEditor;
 use rand::Rng;
 
-pub fn generate_natural(editor: &mut WorldEditor, element: &ProcessedElement, args: &Args) {
+pub fn generate_natural(editor: &WorldEditor, element: &ProcessedElement, args: &Args) {
     if let Some(natural_type) = element.tags().get("natural") {
         if natural_type == "tree" {
             if let ProcessedElement::Node(node) = element {
@@ -445,7 +445,7 @@ pub fn generate_natural(editor: &mut WorldEditor, element: &ProcessedElement, ar
 }
 
 pub fn generate_natural_from_relation(
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
     rel: &ProcessedRelation,
     args: &Args,
 ) {

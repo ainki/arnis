@@ -123,6 +123,14 @@
           </div>
         </div>
 
+        <!-- Water Generation Toggle Button -->
+        <div class="settings-row">
+          <label for="water-toggle" data-localize="water">Generate Water</label>
+          <div class="settings-control">
+            <input type="checkbox" id="water-toggle" name="water-toggle" checked>
+          </div>
+        </div>
+
         <!-- World Scale Slider -->
         <div class="settings-row">
           <label for="scale-value-slider" data-localize="world_scale">World Scale</label>
@@ -166,7 +174,7 @@
         <div class="settings-row">
           <label for="terrain-provider-select">Terrain Provider</label>
           <div class="settings-control">
-            <select id="terrain-provider-select" name="terrain-provider-select" class="provider-dropdown">
+            <select id="terrain-provider-select" name="terrain-provider-select" class="theme-dropdown">
               <option value="aws">AWS Terrarium (no token)</option>
               <option value="mapbox">Mapbox Terrain RGB (requires token)</option>
             </select>

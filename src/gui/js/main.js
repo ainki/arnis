@@ -695,11 +695,12 @@ async function startGeneration() {
     var interior = document.getElementById("interior-toggle").checked;
     var roof = document.getElementById("roof-toggle").checked;
     var fill_ground = document.getElementById("fillground-toggle").checked;
+    var water = document.getElementById("water-toggle").checked;
     var scale = parseFloat(document.getElementById("scale-value-slider").value);
     var floodfill_timeout = parseInt(document.getElementById("floodfill-timeout").value, 10);
     // var ground_level = parseInt(document.getElementById("ground-level").value, 10);
     // DEPRECATED: Ground level input removed from UI
-    var ground_level = -62;
+    var ground_level = 0;
 
     // Validate floodfill_timeout and ground_level
     floodfill_timeout = isNaN(floodfill_timeout) || floodfill_timeout < 0 ? 20 : floodfill_timeout;
@@ -728,6 +729,7 @@ async function startGeneration() {
         interiorEnabled: interior,
         roofEnabled: roof,
         fillgroundEnabled: fill_ground,
+        waterEnabled: water,
         isNewWorld: isNewWorld,
         spawnPoint: spawnPoint,
         telemetryConsent: telemetryConsent || false

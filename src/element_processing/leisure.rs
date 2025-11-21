@@ -7,7 +7,7 @@ use crate::osm_parser::{ProcessedMemberRole, ProcessedRelation, ProcessedWay};
 use crate::world_editor::WorldEditor;
 use rand::Rng;
 
-pub fn generate_leisure(editor: &mut WorldEditor, element: &ProcessedWay, args: &Args) {
+pub fn generate_leisure(editor: &WorldEditor, element: &ProcessedWay, args: &Args) {
     if let Some(leisure_type) = element.tags.get("leisure") {
         let mut previous_node: Option<(i32, i32)> = None;
         let mut corner_addup: (i32, i32, i32) = (0, 0, 0);
@@ -173,7 +173,7 @@ pub fn generate_leisure(editor: &mut WorldEditor, element: &ProcessedWay, args: 
 }
 
 pub fn generate_leisure_from_relation(
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
     rel: &ProcessedRelation,
     args: &Args,
 ) {

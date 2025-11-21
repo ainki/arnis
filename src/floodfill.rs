@@ -1,7 +1,20 @@
 use geo::{Contains, LineString, Point, Polygon};
 use itertools::Itertools;
+use rayon::prelude::*;
 use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Derive a flood-fill iteration budget proportional to the polygon's bounding box area.
+/// This keeps large polygons from tripping the safety limit while still preventing
+/// accidental infinite loops on malformed geometries.
+fn compute_iteration_budget(min_x: i32, max_x: i32, min_z: i32, max_z: i32) -> u64 {
+    let width = (i64::from(max_x) - i64::from(min_x) + 1).max(1) as u64;
+    let height = (i64::from(max_z) - i64::from(min_z) + 1).max(1) as u64;
+    let area = width.saturating_mul(height);
+    // Allow at least two passes over the bounding area and enforce a sane floor.
+    area.saturating_mul(2).max(1_000_000)
+}
 
 /// Main flood fill function with automatic algorithm selection
 /// Chooses the best algorithm based on polygon size and complexity
@@ -49,8 +62,8 @@ fn optimized_flood_fill_area(
 ) -> Vec<(i32, i32)> {
     let start_time = Instant::now();
 
-    let mut filled_area = Vec::new();
-    let mut global_visited = HashSet::new();
+    let filled_area = Arc::new(Mutex::new(Vec::new()));
+    let global_visited = Arc::new(Mutex::new(HashSet::new()));
 
     // Create polygon for containment testing
     let exterior_coords: Vec<(f64, f64)> = polygon_coords
@@ -58,7 +71,7 @@ fn optimized_flood_fill_area(
         .map(|&(x, z)| (x as f64, z as f64))
         .collect();
     let exterior = LineString::from(exterior_coords);
-    let polygon = Polygon::new(exterior, vec![]);
+    let polygon = Arc::new(Polygon::new(exterior, vec![]));
 
     // Optimized step sizes: larger steps for efficiency, but still catch U-shapes
     let width = max_x - min_x + 1;
@@ -66,70 +79,69 @@ fn optimized_flood_fill_area(
     let step_x = (width / 6).clamp(1, 8); // Balance between coverage and speed
     let step_z = (height / 6).clamp(1, 8);
 
-    // Pre-allocate queue with reasonable capacity to avoid reallocations
-    let mut queue = VecDeque::with_capacity(1024);
-    let mut iterations = 0u64;
-    const MAX_ITERATIONS: u64 = 1_000_000; // Safety limit to prevent infinite loops
+    let max_iterations = compute_iteration_budget(min_x, max_x, min_z, max_z);
 
-    for z in (min_z..=max_z).step_by(step_z as usize) {
-        for x in (min_x..=max_x).step_by(step_x as usize) {
-            // Check timeout more frequently for small areas
-            #[allow(clippy::manual_is_multiple_of)]
-            if iterations % 50 == 0 {
-                if let Some(timeout) = timeout {
-                    if start_time.elapsed() > *timeout {
-                        return filled_area;
-                    }
+    // Generate seed points in parallel
+    let seed_points: Vec<(i32, i32)> = (min_z..=max_z)
+        .step_by(step_z as usize)
+        .flat_map(|z| {
+            (min_x..=max_x)
+                .step_by(step_x as usize)
+                .map(move |x| (x, z))
+        })
+        .collect();
+
+    // Process seed points in parallel with chunking for better load balancing
+    seed_points.par_chunks(32).for_each(|chunk| {
+        for &(x, z) in chunk {
+            // Check timeout
+            if let Some(timeout) = timeout {
+                if start_time.elapsed() > *timeout {
+                    return;
                 }
             }
 
-            // Safety check: prevent infinite loops
-            iterations += 1;
-            if iterations > MAX_ITERATIONS {
-                eprintln!(
-                    "Warning: Flood fill exceeded max iterations ({}), aborting",
-                    MAX_ITERATIONS
-                );
-                return filled_area;
+            // Skip if already visited
+            {
+                let visited = global_visited.lock().unwrap();
+                if visited.contains(&(x, z)) {
+                    continue;
+                }
             }
 
-            // Skip if already visited or not inside polygon
-            if global_visited.contains(&(x, z))
-                || !polygon.contains(&Point::new(x as f64, z as f64))
-            {
+            // Check if inside polygon
+            if !polygon.contains(&Point::new(x as f64, z as f64)) {
                 continue;
             }
 
-            // Start flood fill from this seed point
-            queue.clear(); // Reuse queue instead of creating new one
+            // Start flood fill from this seed point with local structures
+            let mut queue = VecDeque::with_capacity(1024);
+            let mut local_filled = Vec::new();
+            let mut local_visited = HashSet::new();
+            
             queue.push_back((x, z));
-            global_visited.insert((x, z));
+            local_visited.insert((x, z));
+            let mut iterations = 0u64;
 
             while let Some((curr_x, curr_z)) = queue.pop_front() {
-                // Additional iteration check inside inner loop
                 iterations += 1;
-                if iterations > MAX_ITERATIONS {
-                    eprintln!(
-                        "Warning: Flood fill exceeded max iterations ({}), aborting",
-                        MAX_ITERATIONS
-                    );
-                    return filled_area;
+                if iterations > max_iterations {
+                    break;
                 }
 
-                // Timeout check in inner loop for problematic polygons
-                #[allow(clippy::manual_is_multiple_of)]
+                // Check timeout periodically
                 if iterations % 1000 == 0 {
                     if let Some(timeout) = timeout {
                         if start_time.elapsed() > *timeout {
-                            return filled_area;
+                            break;
                         }
                     }
                 }
 
                 // Add current point to filled area
-                filled_area.push((curr_x, curr_z));
+                local_filled.push((curr_x, curr_z));
 
-                // Check all four directions with optimized bounds checking
+                // Check all four directions
                 let neighbors = [
                     (curr_x - 1, curr_z),
                     (curr_x + 1, curr_z),
@@ -142,20 +154,33 @@ fn optimized_flood_fill_area(
                         && *nx <= max_x
                         && *nz >= min_z
                         && *nz <= max_z
-                        && !global_visited.contains(&(*nx, *nz))
+                        && !local_visited.contains(&(*nx, *nz))
                     {
                         // Only check polygon containment for unvisited points
                         if polygon.contains(&Point::new(*nx as f64, *nz as f64)) {
-                            global_visited.insert((*nx, *nz));
+                            local_visited.insert((*nx, *nz));
                             queue.push_back((*nx, *nz));
                         }
                     }
                 }
             }
-        }
-    }
 
-    filled_area
+            // Merge local results into global structures
+            if !local_filled.is_empty() {
+                let mut global_vis = global_visited.lock().unwrap();
+                let mut global_fill = filled_area.lock().unwrap();
+                
+                for point in &local_filled {
+                    if !global_vis.contains(point) {
+                        global_vis.insert(*point);
+                        global_fill.push(*point);
+                    }
+                }
+            }
+        }
+    });
+
+    Arc::try_unwrap(filled_area).unwrap().into_inner().unwrap()
 }
 
 /// Original flood fill algorithm with enhanced multi-seed detection for complex shapes
@@ -189,7 +214,7 @@ fn original_flood_fill_area(
     let mut queue: VecDeque<(i32, i32)> = VecDeque::with_capacity(2048);
     filled_area.reserve(1000); // Reserve space to reduce reallocations
     let mut iterations = 0u64;
-    const MAX_ITERATIONS: u64 = 1_000_000; // Safety limit to prevent infinite loops
+    let max_iterations = compute_iteration_budget(min_x, max_x, min_z, max_z);
 
     // Scan for multiple seed points to handle U-shapes and concave polygons
     for z in (min_z..=max_z).step_by(step_z as usize) {
@@ -206,10 +231,10 @@ fn original_flood_fill_area(
 
             // Safety check: prevent infinite loops
             iterations += 1;
-            if iterations > MAX_ITERATIONS {
+            if iterations > max_iterations {
                 eprintln!(
                     "Warning: Flood fill exceeded max iterations ({}), aborting",
-                    MAX_ITERATIONS
+                    max_iterations
                 );
                 return filled_area;
             }
@@ -229,10 +254,10 @@ fn original_flood_fill_area(
             while let Some((curr_x, curr_z)) = queue.pop_front() {
                 // Additional iteration check inside inner loop
                 iterations += 1;
-                if iterations > MAX_ITERATIONS {
+                if iterations > max_iterations {
                     eprintln!(
                         "Warning: Flood fill exceeded max iterations ({}), aborting",
-                        MAX_ITERATIONS
+                        max_iterations
                     );
                     return filled_area;
                 }

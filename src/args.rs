@@ -51,6 +51,10 @@ pub struct Args {
     #[arg(long, default_value_t = false, action = clap::ArgAction::SetFalse)]
     pub fillground: bool,
 
+    /// Enable elevation-based water generation (optional)
+    #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]
+    pub water: bool,
+
     /// Enable debug mode (optional)
     #[arg(long)]
     pub debug: bool,

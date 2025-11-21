@@ -5,7 +5,7 @@ use crate::world_editor::WorldEditor;
 
 // TODO FIX
 #[allow(dead_code)]
-pub fn generate_bridges(editor: &mut WorldEditor, element: &ProcessedWay) {
+pub fn generate_bridges(editor: &WorldEditor, element: &ProcessedWay) {
     if let Some(_bridge_type) = element.tags.get("bridge") {
         let bridge_height = 3; // Fixed height
 
