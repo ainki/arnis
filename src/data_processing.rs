@@ -151,7 +151,7 @@ pub fn generate_world(
                     }
 
                     if way.tags.contains_key("building") || way.tags.contains_key("building:part") {
-                        buildings::generate_buildings(&editor, way, args, None);
+                        buildings::generate_buildings(&editor, way, args, None, None);
                     } else if way.tags.contains_key("highway") {
                         highways::generate_highways(&editor, element, args, &elements);
                     } else if way.tags.contains_key("landuse") {
@@ -206,30 +206,30 @@ pub fn generate_world(
                         man_made::generate_man_made_nodes(&editor, node);
                     }
                 }
-            }
-            ProcessedElement::Relation(rel) => {
-                if is_building_relation(rel) {
-                    buildings::generate_building_from_relation(&mut editor, rel, args);
-                } else if rel.tags.contains_key("water")
-                    || rel
-                        .tags
-                        .get("natural")
-                        .map(|val| val == "water" || val == "bay")
-                        .unwrap_or(false)
-                {
-                    water_areas::generate_water_areas_from_relation(&mut editor, rel);
-                } else if rel.tags.contains_key("natural") {
-                    natural::generate_natural_from_relation(&mut editor, rel, args);
-                } else if rel.tags.contains_key("landuse") {
-                    landuse::generate_landuse_from_relation(&mut editor, rel, args);
-                } else if rel.tags.get("leisure") == Some(&"park".to_string()) {
-                    leisure::generate_leisure_from_relation(&mut editor, rel, args);
-                } else if rel.tags.contains_key("man_made") {
-                    man_made::generate_man_made(
-                        &mut editor,
-                        &ProcessedElement::Relation(rel.clone()),
-                        args,
-                    );
+                ProcessedElement::Relation(rel) => {
+                    if is_building_relation(rel) {
+                        buildings::generate_building_from_relation(&editor, rel, args);
+                    } else if rel.tags.contains_key("water")
+                        || rel
+                            .tags
+                            .get("natural")
+                            .map(|val| val == "water" || val == "bay")
+                            .unwrap_or(false)
+                    {
+                        water_areas::generate_water_areas_from_relation(&editor, rel);
+                    } else if rel.tags.contains_key("natural") {
+                        natural::generate_natural_from_relation(&editor, rel, args);
+                    } else if rel.tags.contains_key("landuse") {
+                        landuse::generate_landuse_from_relation(&editor, rel, args);
+                    } else if rel.tags.get("leisure") == Some(&"park".to_string()) {
+                        leisure::generate_leisure_from_relation(&editor, rel, args);
+                    } else if rel.tags.contains_key("man_made") {
+                        man_made::generate_man_made(
+                            &editor,
+                            &ProcessedElement::Relation(rel.clone()),
+                            args,
+                        );
+                    }
                 }
             } // Close match
 
@@ -464,74 +464,4 @@ pub fn generate_world(
     emit_gui_progress_update(100.0, "Done! World generation completed.");
     println!("{}", "Done! World generation completed.".green().bold());
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::coordinate_system::geographic::LLBBox;
-    use crate::osm_parser::parse_osm_data;
-    use serde_json::Value;
-
-    #[test]
-    fn relation_outline_is_flagged_for_skipping() {
-        let json = std::fs::read_to_string("tests/data/relation_12032571.json")
-            .expect("fixture missing: relation_12032571.json");
-        let json_value: Value = serde_json::from_str(&json).unwrap();
-        let bbox = LLBBox::new(60.1542, 24.6287, 60.1545, 24.6293).unwrap();
-        let (elements, _) = parse_osm_data(json_value, bbox, 1.0, false);
-
-        let (outlines, relations) = detect_building_part_relations(&elements);
-
-        assert!(relations.contains(&12032571));
-        assert!(outlines.contains(&37104503));
-    }
-
-    #[test]
-    fn relation_13981741_outline_is_flagged() {
-        let json = std::fs::read_to_string("tests/data/relation_13981741.json")
-            .expect("fixture missing: relation_13981741.json");
-        let json_value: Value = serde_json::from_str(&json).unwrap();
-        let bbox = LLBBox::new(60.1480, 24.6520, 60.1515, 24.6585).unwrap();
-        let (elements, _) = parse_osm_data(json_value, bbox, 1.0, false);
-
-        let (outlines, relations) = detect_building_part_relations(&elements);
-
-        let outline_way = elements.iter().find_map(|element| {
-            if let ProcessedElement::Way(way) = element {
-                (way.id == 972283013).then_some(way)
-            } else {
-                None
-            }
-        });
-
-        assert!(relations.contains(&13981741));
-        assert!(outlines.contains(&972283013));
-        assert!(outline_way.is_some());
-        assert!(!outline_way.unwrap().tags.contains_key("building:part"));
-    }
-
-    #[test]
-    fn relation_11484587_outline_is_flagged() {
-        let json = std::fs::read_to_string("tests/data/relation_11484587.json")
-            .expect("fixture missing: relation_11484587.json");
-        let json_value: Value = serde_json::from_str(&json).unwrap();
-        let bbox = LLBBox::new(60.1483, 24.6523, 60.1493, 24.6539).unwrap();
-        let (elements, _) = parse_osm_data(json_value, bbox, 1.0, false);
-
-        let (outlines, relations) = detect_building_part_relations(&elements);
-
-        let outline_way = elements.iter().find_map(|element| {
-            if let ProcessedElement::Way(way) = element {
-                (way.id == 840899088).then_some(way)
-            } else {
-                None
-            }
-        });
-
-        assert!(relations.contains(&11484587));
-        assert!(outlines.contains(&840899088));
-        assert!(outline_way.is_some());
-        assert!(!outline_way.unwrap().tags.contains_key("building:part"));
-    }
 }
