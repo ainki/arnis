@@ -1,6 +1,6 @@
 use crate::args::Args;
-use crate::block_definitions::{BEDROCK, DIRT, GRASS_BLOCK, STONE};
-use crate::coordinate_system::cartesian::XZBBox;
+use crate::block_definitions::{BEDROCK, DIRT, GRASS_BLOCK, STONE, WATER};
+use crate::coordinate_system::cartesian::{XZBBox, XZPoint};
 use crate::coordinate_system::geographic::LLBBox;
 use crate::element_processing::*;
 use crate::ground::Ground;
@@ -380,6 +380,51 @@ pub fn generate_world(
         ground_pb.inc(total_blocks - final_count);
     }
     ground_pb.finish();
+
+    // FINAL PASS: Replace blocks at minimum elevation with water (if nothing above)
+    println!("{} Applying elevation-based water...", "[7/7]".bold());
+    emit_gui_progress_update(90.0, "Applying elevation-based water...");
+
+    // Get minimum elevation from ground data
+    let all_points_for_min = (xzbbox.min_x()..=xzbbox.max_x())
+        .flat_map(|x| (xzbbox.min_z()..=xzbbox.max_z()).map(move |z| XZPoint { x, z }));
+    let min_elevation = ground.min_level(all_points_for_min).unwrap_or(0);
+    println!(
+        "Using minimum elevation {} for water placement",
+        min_elevation
+    );
+
+    let water_pb = ProgressBar::new(coords.len() as u64);
+    water_pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:45}] {pos}/{len} blocks ({eta})")
+            .unwrap()
+            .progress_chars("█▓░"),
+    );
+
+    coords.par_chunks(chunk_size).for_each(|chunk| {
+        for (x, z) in chunk {
+            let elevation = ground.level(XZPoint { x: *x, z: *z });
+
+            // If at minimum elevation AND nothing above at that elevation, place water
+            if elevation == min_elevation {
+                // Check if there's a block above the elevation level
+                if !editor.block_at_absolute(*x, elevation + 1, *z) {
+                    // Allow overwriting grass, dirt, or existing water
+                    editor.set_block_absolute(
+                        WATER,
+                        *x,
+                        elevation,
+                        *z,
+                        Some(&[GRASS_BLOCK, DIRT, WATER]),
+                        None,
+                    );
+                }
+            }
+        }
+        water_pb.inc(chunk.len() as u64);
+    });
+    water_pb.finish();
 
     // Editor is already mutable through interior mutability
 
