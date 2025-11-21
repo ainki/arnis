@@ -54,9 +54,7 @@ pub fn generate_landuse(editor: &WorldEditor, element: &ProcessedWay, args: &Arg
     for (x, z) in floor_area {
         if landuse_tag == "traffic_island" {
             editor.set_block(block_type, x, 1, z, None, None);
-        } else if landuse_tag == "construction" || landuse_tag == "railway" {
-            editor.set_block(block_type, x, 0, z, None, Some(&[SPONGE]));
-        } else if landuse_tag == "grass" {
+        } else if landuse_tag == "construction" || landuse_tag == "railway" || landuse_tag == "grass" {
             editor.set_block(block_type, x, 0, z, None, Some(&[SPONGE]));
         } else {
             editor.set_block(block_type, x, 0, z, None, None);
@@ -269,7 +267,30 @@ pub fn generate_landuse(editor: &WorldEditor, element: &ProcessedWay, args: &Arg
                     }
                 }
             }
-            _ => {}
+            "brownfield" => {
+              editor.set_block(STONE, x, -1, z, Some(&[STONE]), None);
+              editor.set_block(STONE, x, -2, z, Some(&[STONE]), None);
+              let random_choice: i32 = rng.gen_range(0..1501);
+              if random_choice < 100 {
+                  editor.set_block(GRAVEL, x, 0, z, None, Some(&[SPONGE]));
+              } else if random_choice < 115 {
+                  editor.set_block(SAND, x, 0, z, None, Some(&[SPONGE]));
+              } else if random_choice < 125 {
+                  editor.set_block(DIORITE, x, 0, z, None, Some(&[SPONGE]));
+              } else if random_choice < 145 {
+                  editor.set_block(BRICK, x, 0, z, None, Some(&[SPONGE]));
+              } else if random_choice < 155 {
+                  editor.set_block(GRANITE, x, 0, z, None, Some(&[SPONGE]));
+              } else if random_choice < 180 {
+                  editor.set_block(ANDESITE, x, 0, z, None, Some(&[SPONGE]));
+              } else if random_choice < 565 {
+                  editor.set_block(COBBLESTONE, x, 0, z, None, Some(&[SPONGE]));
+              }
+            }
+            _ => {
+              editor.set_block(STONE, x, -1, z, Some(&[STONE]), None);
+              editor.set_block(STONE, x, -2, z, Some(&[STONE]), None);
+            }
         }
     }
 }
