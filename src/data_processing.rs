@@ -365,8 +365,9 @@ pub fn generate_world(
 
         // Update GUI progress
         let new_progress = (70.0 + (count as f64 * progress_increment_grnd)) * 10.0;
-        let prev = gui_progress.fetch_max(new_progress as u64, Ordering::Relaxed);
-        if new_progress as u64 - prev > 2 {
+        let new_progress_u64 = new_progress as u64;
+        let prev = gui_progress.fetch_max(new_progress_u64, Ordering::Relaxed);
+        if new_progress_u64 > prev.saturating_add(2) {
             // Update every 0.2%
             emit_gui_progress_update(new_progress / 10.0, "");
         }
