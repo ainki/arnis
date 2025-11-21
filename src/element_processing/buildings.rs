@@ -5,7 +5,7 @@ use crate::colors::color_text_to_rgb_tuple;
 use crate::coordinate_system::cartesian::XZPoint;
 use crate::element_processing::subprocessor::buildings_interior::generate_building_interior;
 use crate::floodfill::flood_fill_area;
-use crate::osm_parser::{ProcessedMemberRole, ProcessedRelation, ProcessedWay};
+use crate::osm_parser::{ProcessedMemberRole, ProcessedRelation, ProcessedWay, ProcessedNode};
 use crate::world_editor::WorldEditor;
 use rand::Rng;
 use rayon::prelude::*;
@@ -29,13 +29,19 @@ enum RoofOrientationHint {
     Across,
 }
 
+#[derive(Clone)]
+pub(crate) struct HolePolygon<'a> {
+    way: &'a ProcessedWay,
+    add_walls: bool,
+}
+
 #[inline]
 pub fn generate_buildings(
     editor: &WorldEditor,
     element: &ProcessedWay,
     args: &Args,
     relation_levels: Option<i32>,
-    hole_polygons: Option<&[&ProcessedWay]>,
+    hole_polygons: Option<&[HolePolygon<'_>]>,
 ) {
     let is_building_part = element.tags.contains_key("building:part");
 
@@ -81,9 +87,9 @@ pub fn generate_buildings(
     if let Some(holes) = hole_polygons {
         if !holes.is_empty() {
             let mut hole_points: HashSet<(i32, i32)> = HashSet::new();
-            for hole_way in holes {
+            for hole in holes {
                 let hole_coords: Vec<(i32, i32)> =
-                    hole_way.nodes.iter().map(|n| (n.x, n.z)).collect();
+                    hole.way.nodes.iter().map(|n| (n.x, n.z)).collect();
                 if hole_coords.len() < 3 {
                     continue;
                 }
@@ -147,7 +153,6 @@ pub fn generate_buildings(
 
     let mut previous_node: Option<(i32, i32)> = None;
     let mut corner_addup: (i32, i32, i32) = (0, 0, 0);
-    let mut current_building: Vec<(i32, i32)> = vec![];
 
     // Get building type for type-specific block selection
     let building_type = element
@@ -511,130 +516,54 @@ pub fn generate_buildings(
         }
     }
 
-    // Process nodes to create walls and corners
-    for node in &element.nodes {
-        let x: i32 = node.x;
-        let z: i32 = node.z;
+    // Process nodes to create walls and corners (outer shell)
+    build_wall_ring(
+        &element.nodes,
+        editor,
+        args,
+        wall_block,
+        window_block,
+        accent_block,
+        start_y_offset,
+        building_height,
+        is_tall_building,
+        use_vertical_windows,
+        use_accent_roof_line,
+        use_accent_lines,
+        use_vertical_accent,
+        min_level,
+        min_height_offset,
+        abs_terrain_offset,
+        &mut corner_addup,
+    );
 
-        if let Some(prev) = previous_node {
-            // Calculate walls and corners using Bresenham line
-            let bresenham_points =
-                bresenham_line(prev.0, start_y_offset, prev.1, x, start_y_offset, z);
-            for (bx, _, bz) in bresenham_points {
-                // Create foundation pillars from ground up to building base if needed
-                // Only create foundations for buildings without min_level (elevated buildings shouldn't have foundations)
-                if args.terrain && min_level == 0 && min_height_offset == 0 {
-                    // Calculate actual ground level at this position
-                    let local_ground_level = if let Some(ground) = editor.get_ground() {
-                        ground.level(XZPoint::new(
-                            bx - editor.get_min_coords().0,
-                            bz - editor.get_min_coords().1,
-                        ))
-                    } else {
-                        args.ground_level
-                    };
-
-                    // Add foundation blocks from ground to building base
-                    for y in local_ground_level..start_y_offset + 1 {
-                        editor.set_block_absolute(
-                            wall_block,
-                            bx,
-                            y + abs_terrain_offset,
-                            bz,
-                            None,
-                            None,
-                        );
-                    }
-                }
-
-                for h in (start_y_offset + 1)..=(start_y_offset + building_height) {
-                    // Add windows to the walls at intervals
-                    // Use different window patterns for tall buildings
-                    if is_tall_building && use_vertical_windows {
-                        // Tall building pattern - narrower windows with continuous vertical strips
-                        if h > start_y_offset + 1 && (bx + bz) % 3 == 0 {
-                            editor.set_block_absolute(
-                                window_block,
-                                bx,
-                                h + abs_terrain_offset,
-                                bz,
-                                None,
-                                None,
-                            );
-                        } else {
-                            editor.set_block_absolute(
-                                wall_block,
-                                bx,
-                                h + abs_terrain_offset,
-                                bz,
-                                None,
-                                None,
-                            );
-                        }
-                    } else {
-                        // Original pattern for regular buildings (non-vertical windows)
-                        if h > start_y_offset + 1 && h % 4 != 0 && (bx + bz) % 6 < 3 {
-                            editor.set_block_absolute(
-                                window_block,
-                                bx,
-                                h + abs_terrain_offset,
-                                bz,
-                                None,
-                                None,
-                            );
-                        } else {
-                            // Use accent block line between windows if enabled for this building
-                            let use_accent_line =
-                                use_accent_lines && h > start_y_offset + 1 && h % 4 == 0;
-                            // Use vertical accent block pattern (where windows would be, but on non-window Y levels) if enabled
-                            let use_vertical_accent_here = use_vertical_accent
-                                && h > start_y_offset + 1
-                                && h % 4 == 0
-                                && (bx + bz) % 6 < 3;
-
-                            if use_accent_line || use_vertical_accent_here {
-                                editor.set_block_absolute(
-                                    accent_block,
-                                    bx,
-                                    h + abs_terrain_offset,
-                                    bz,
-                                    None,
-                                    None,
-                                );
-                            } else {
-                                editor.set_block_absolute(
-                                    wall_block,
-                                    bx,
-                                    h + abs_terrain_offset,
-                                    bz,
-                                    None,
-                                    None,
-                                );
-                            }
-                        }
-                    }
-                }
-
-                let roof_line_block = if use_accent_roof_line {
-                    accent_block
-                } else {
-                    wall_block
-                };
-                editor.set_block_absolute(
-                    roof_line_block,
-                    bx,
-                    start_y_offset + building_height + abs_terrain_offset + 1,
-                    bz,
-                    None,
-                    None,
-                );
-
-                current_building.push((bx, bz));
-                corner_addup = (corner_addup.0 + bx, corner_addup.1 + bz, corner_addup.2 + 1);
+    // Add inner courtyard walls for multipolygon holes and building parts
+    if let Some(hole_polygons) = hole_polygons {
+        for hole in hole_polygons {
+            if !hole.add_walls {
+                continue;
             }
-        }
 
-        previous_node = Some((x, z));
+            build_wall_ring(
+                &hole.way.nodes,
+                editor,
+                args,
+                wall_block,
+                window_block,
+                accent_block,
+                start_y_offset,
+                building_height,
+                is_tall_building,
+                use_vertical_windows,
+                use_accent_roof_line,
+                use_accent_lines,
+                use_vertical_accent,
+                min_level,
+                min_height_offset,
+                abs_terrain_offset,
+                &mut corner_addup,
+            );
+        }
     }
 
     // Flood-fill interior with floor variation
@@ -860,6 +789,144 @@ pub fn generate_buildings(
         }
     } else {
         // Default flat roof - already handled by the building generation code
+    }
+}
+
+fn build_wall_ring(
+    nodes: &[ProcessedNode],
+    editor: &WorldEditor,
+    args: &Args,
+    wall_block: Block,
+    window_block: Block,
+    accent_block: Block,
+    start_y_offset: i32,
+    building_height: i32,
+    is_tall_building: bool,
+    use_vertical_windows: bool,
+    use_accent_roof_line: bool,
+    use_accent_lines: bool,
+    use_vertical_accent: bool,
+    min_level: i32,
+    min_height_offset: i32,
+    abs_terrain_offset: i32,
+    corner_addup: &mut (i32, i32, i32),
+) {
+    if nodes.len() < 2 {
+        return;
+    }
+
+    let mut previous_node: Option<(i32, i32)> = None;
+    for node in nodes {
+        let x = node.x;
+        let z = node.z;
+
+        if let Some(prev) = previous_node {
+            let bresenham_points =
+                bresenham_line(prev.0, start_y_offset, prev.1, x, start_y_offset, z);
+            for (bx, _, bz) in bresenham_points {
+                if args.terrain && min_level == 0 && min_height_offset == 0 {
+                    let local_ground_level = if let Some(ground) = editor.get_ground() {
+                        ground.level(XZPoint::new(
+                            bx - editor.get_min_coords().0,
+                            bz - editor.get_min_coords().1,
+                        ))
+                    } else {
+                        args.ground_level
+                    };
+
+                    for y in local_ground_level..start_y_offset + 1 {
+                        editor.set_block_absolute(
+                            wall_block,
+                            bx,
+                            y + abs_terrain_offset,
+                            bz,
+                            None,
+                            None,
+                        );
+                    }
+                }
+
+                for h in (start_y_offset + 1)..=(start_y_offset + building_height) {
+                    if is_tall_building && use_vertical_windows {
+                        if h > start_y_offset + 1 && (bx + bz) % 3 == 0 {
+                            editor.set_block_absolute(
+                                window_block,
+                                bx,
+                                h + abs_terrain_offset,
+                                bz,
+                                None,
+                                None,
+                            );
+                        } else {
+                            editor.set_block_absolute(
+                                wall_block,
+                                bx,
+                                h + abs_terrain_offset,
+                                bz,
+                                None,
+                                None,
+                            );
+                        }
+                    } else if h > start_y_offset + 1 && h % 4 != 0 && (bx + bz) % 6 < 3 {
+                        editor.set_block_absolute(
+                            window_block,
+                            bx,
+                            h + abs_terrain_offset,
+                            bz,
+                            None,
+                            None,
+                        );
+                    } else {
+                        let use_accent_line =
+                            use_accent_lines && h > start_y_offset + 1 && h % 4 == 0;
+                        let use_vertical_accent_here = use_vertical_accent
+                            && h > start_y_offset + 1
+                            && h % 4 == 0
+                            && (bx + bz) % 6 < 3;
+
+                        if use_accent_line || use_vertical_accent_here {
+                            editor.set_block_absolute(
+                                accent_block,
+                                bx,
+                                h + abs_terrain_offset,
+                                bz,
+                                None,
+                                None,
+                            );
+                        } else {
+                            editor.set_block_absolute(
+                                wall_block,
+                                bx,
+                                h + abs_terrain_offset,
+                                bz,
+                                None,
+                                None,
+                            );
+                        }
+                    }
+                }
+
+                let roof_line_block = if use_accent_roof_line {
+                    accent_block
+                } else {
+                    wall_block
+                };
+                editor.set_block_absolute(
+                    roof_line_block,
+                    bx,
+                    start_y_offset + building_height + abs_terrain_offset + 1,
+                    bz,
+                    None,
+                    None,
+                );
+
+                corner_addup.0 += bx;
+                corner_addup.1 += bz;
+                corner_addup.2 += 1;
+            }
+        }
+
+        previous_node = Some((x, z));
     }
 }
 
@@ -1829,22 +1896,53 @@ pub fn generate_building_from_relation(
         .and_then(|l: &String| l.parse::<i32>().ok())
         .unwrap_or(2); // Default to 2 levels
 
-    let part_members: Vec<&ProcessedWay> = relation
+    // Treat both explicit inner rings and building:part members as voids when
+    // generating the base outline so courtyards stay hollow and detailed parts
+    // do not get overwritten by the shell.
+    let mut hole_members: Vec<HolePolygon> = relation
         .members
         .iter()
-        .filter(|member| member.role == ProcessedMemberRole::Part)
-        .map(|member| &member.way)
+        .filter_map(|member| match member.role {
+            ProcessedMemberRole::Inner => Some(HolePolygon {
+                way: &member.way,
+                add_walls: true,
+            }),
+            ProcessedMemberRole::Part => Some(HolePolygon {
+                way: &member.way,
+                add_walls: false,
+            }),
+            _ => None,
+        })
         .collect();
-    let holes: Option<&[&ProcessedWay]> = if part_members.is_empty() {
+
+    // Deduplicate to avoid redundant flood-fill passes when the same geometry
+    // is referenced multiple times inside a relation.
+    hole_members.sort_by_key(|entry| entry.way.id);
+    hole_members.dedup_by(|a, b| {
+        if a.way.id == b.way.id {
+            b.add_walls |= a.add_walls;
+            true
+        } else {
+            false
+        }
+    });
+
+    let hole_polygons: Option<&[HolePolygon]> = if hole_members.is_empty() {
         None
     } else {
-        Some(part_members.as_slice())
+        Some(hole_members.as_slice())
     };
 
     // Process the outer way to create the building walls, carving out building:part footprints if needed
     for member in &relation.members {
         if member.role == ProcessedMemberRole::Outer {
-            generate_buildings(editor, &member.way, args, Some(relation_levels), holes);
+            generate_buildings(
+                editor,
+                &member.way,
+                args,
+                Some(relation_levels),
+                hole_polygons,
+            );
         }
     }
 
