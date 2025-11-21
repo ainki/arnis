@@ -206,39 +206,30 @@ pub fn generate_world(
                         man_made::generate_man_made_nodes(&editor, node);
                     }
                 }
-                ProcessedElement::Relation(rel) => {
-                    if is_building_relation(rel) {
-                        if relations_with_parts.contains(&rel.id) {
-                            if args.debug {
-                                println!(
-                                    "Skipping relation {} because its parts were handled individually",
-                                    rel.id
-                                );
-                            }
-                            return;
-                        }
-                        buildings::generate_building_from_relation(&editor, rel, args);
-                    } else if rel.tags.contains_key("water")
-                        || rel
-                            .tags
-                            .get("natural")
-                            .map(|val| val == "water" || val == "bay")
-                            .unwrap_or(false)
-                    {
-                        water_areas::generate_water_areas_from_relation(&editor, rel);
-                    } else if rel.tags.contains_key("natural") {
-                        natural::generate_natural_from_relation(&editor, rel, args);
-                    } else if rel.tags.contains_key("landuse") {
-                        landuse::generate_landuse_from_relation(&editor, rel, args);
-                    } else if rel.tags.get("leisure") == Some(&"park".to_string()) {
-                        leisure::generate_leisure_from_relation(&editor, rel, args);
-                    } else if rel.tags.contains_key("man_made") {
-                        man_made::generate_man_made(
-                            &editor,
-                            &ProcessedElement::Relation(rel.clone()),
-                            args,
-                        );
-                    }
+            }
+            ProcessedElement::Relation(rel) => {
+                if is_building_relation(rel) {
+                    buildings::generate_building_from_relation(&mut editor, rel, args);
+                } else if rel.tags.contains_key("water")
+                    || rel
+                        .tags
+                        .get("natural")
+                        .map(|val| val == "water" || val == "bay")
+                        .unwrap_or(false)
+                {
+                    water_areas::generate_water_areas_from_relation(&mut editor, rel);
+                } else if rel.tags.contains_key("natural") {
+                    natural::generate_natural_from_relation(&mut editor, rel, args);
+                } else if rel.tags.contains_key("landuse") {
+                    landuse::generate_landuse_from_relation(&mut editor, rel, args);
+                } else if rel.tags.get("leisure") == Some(&"park".to_string()) {
+                    leisure::generate_leisure_from_relation(&mut editor, rel, args);
+                } else if rel.tags.contains_key("man_made") {
+                    man_made::generate_man_made(
+                        &mut editor,
+                        &ProcessedElement::Relation(rel.clone()),
+                        args,
+                    );
                 }
             } // Close match
 
