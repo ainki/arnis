@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 /// Generates highways with elevation support based on layer tags and connectivity analysis
 pub fn generate_highways(
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
     element: &ProcessedElement,
     args: &Args,
     all_elements: &[ProcessedElement],
@@ -24,6 +24,13 @@ fn build_highway_connectivity_map(elements: &[ProcessedElement]) -> HashMap<(i32
 
     for element in elements {
         if let ProcessedElement::Way(way) = element {
+            if way
+                .tags
+                .get("highway")
+                .is_some_and(|value| value == "proposed")
+            {
+                continue;
+            }
             if way.tags.contains_key("highway") {
                 let layer_value = way
                     .tags
@@ -60,12 +67,15 @@ fn build_highway_connectivity_map(elements: &[ProcessedElement]) -> HashMap<(i32
 
 /// Internal function that generates highways with connectivity context for elevation handling
 fn generate_highways_internal(
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
     element: &ProcessedElement,
     args: &Args,
     highway_connectivity: &HashMap<(i32, i32), Vec<i32>>, // Maps node coordinates to list of layers that connect to this node
 ) {
     if let Some(highway_type) = element.tags().get("highway") {
+        if highway_type == "proposed" {
+            return;
+        }
         if highway_type == "street_lamp" {
             // Handle street lamps
             if let ProcessedElement::Node(first_node) = element {
@@ -155,6 +165,12 @@ fn generate_highways_internal(
             let mut add_outline = false;
             let scale_factor = args.scale;
 
+            // Ensure we have a `ProcessedWay` instance for way-specific logic
+            // Use an underscore-prefixed name because we rebind `way` later
+            let ProcessedElement::Way(_way) = element else {
+                return;
+            };
+
             // Parse the layer value for elevation calculation
             let layer_value = element
                 .tags()
@@ -175,11 +191,15 @@ fn generate_highways_internal(
             // Determine block type and range based on highway type
             match highway_type.as_str() {
                 "footway" | "pedestrian" => {
-                    block_type = GRAY_CONCRETE;
+                    block_type = highway_surface(element, &GRAY_CONCRETE);
                     block_range = 1;
                 }
+                "cycleway" => {
+                    block_type = highway_surface(element, &GRAY_CONCRETE);
+                    block_range = 2;
+                }
                 "path" => {
-                    block_type = DIRT_PATH;
+                    block_type = highway_surface(element, &DIRT_PATH);
                     block_range = 1;
                 }
                 "motorway" | "primary" | "trunk" => {
@@ -197,12 +217,12 @@ fn generate_highways_internal(
                     block_range = 1;
                 }
                 "service" => {
-                    block_type = GRAY_CONCRETE;
+                    block_type = highway_surface(element, &GRAY_CONCRETE);
                     block_range = 2;
                 }
                 "secondary_link" | "tertiary_link" => {
                     //Exit ramps, sliproads
-                    block_type = BLACK_CONCRETE;
+                    block_type = highway_surface(element, &BLACK_CONCRETE);
                     block_range = 1;
                 }
                 "escape" => {
@@ -212,7 +232,7 @@ fn generate_highways_internal(
                 }
                 "steps" => {
                     //TODO: Add correct stairs respecting height, step_count, etc.
-                    block_type = GRAY_CONCRETE;
+                    block_type = highway_surface(element, &GRAY_CONCRETE);
                     block_range = 1;
                 }
 
@@ -556,7 +576,7 @@ fn calculate_point_elevation(
 
 /// Add support pillars for elevated highways
 fn add_highway_support_pillar(
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
     x: i32,
     highway_y: i32,
     z: i32,
@@ -581,7 +601,7 @@ fn add_highway_support_pillar(
 }
 
 /// Generates a siding using stone brick slabs
-pub fn generate_siding(editor: &mut WorldEditor, element: &ProcessedWay) {
+pub fn generate_siding(editor: &WorldEditor, element: &ProcessedWay) {
     let mut previous_node: Option<XZPoint> = None;
     let siding_block: Block = STONE_BRICK_SLAB;
 
@@ -611,7 +631,7 @@ pub fn generate_siding(editor: &mut WorldEditor, element: &ProcessedWay) {
 }
 
 /// Generates an aeroway
-pub fn generate_aeroway(editor: &mut WorldEditor, way: &ProcessedWay, args: &Args) {
+pub fn generate_aeroway(editor: &WorldEditor, way: &ProcessedWay, args: &Args) {
     let mut previous_node: Option<(i32, i32)> = None;
     let surface_block = LIGHT_GRAY_CONCRETE;
 
@@ -635,4 +655,26 @@ pub fn generate_aeroway(editor: &mut WorldEditor, way: &ProcessedWay, args: &Arg
         }
         previous_node = Some((node.x, node.z));
     }
+}
+
+pub fn highway_surface(element: &ProcessedElement, default_surface: &Block) -> Block {
+    // Start with the provided default surface value
+    let mut surface_block: Block = *default_surface;
+
+    if let Some(surface) = element.tags().get("surface") {
+        surface_block = match surface.as_str() {
+            "paving_stones" | "sett" => STONE_BRICKS,
+            "bricks" => BRICK,
+            "wood" => OAK_PLANKS,
+            "asphalt" => BLACK_CONCRETE,
+            "gravel" | "fine_gravel" => GRAVEL,
+            "grass" => GRASS_BLOCK,
+            "dirt" | "ground" | "earth" => DIRT_PATH,
+            "sand" => SAND,
+            "concrete" => LIGHT_GRAY_CONCRETE,
+            _ => *default_surface, // Default to provided default for unknown surfaces
+        };
+    }
+
+    surface_block
 }

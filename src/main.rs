@@ -24,6 +24,7 @@ mod world_editor;
 use args::Args;
 use clap::Parser;
 use colored::*;
+use rayon::prelude::*;
 use std::{env, fs, io::Write};
 
 mod elevation_data;
@@ -41,6 +42,22 @@ mod progress {
 }
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Console::{AttachConsole, FreeConsole, ATTACH_PARENT_PROCESS};
+
+fn initialize_rayon_thread_pool() {
+    // Get the number of available parallelism (usually equals CPU cores)
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8); // Fallback to 8 threads if detection fails
+
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build_global()
+        .unwrap_or_else(|e| {
+            eprintln!("Warning: Failed to set rayon thread pool size: {}", e);
+        });
+
+    println!("Using {} threads for parallel processing", num_threads);
+}
 
 fn run_cli() {
     let version: &str = env!("CARGO_PKG_VERSION");
@@ -93,8 +110,9 @@ fn run_cli() {
     // Parse raw data
     let (mut parsed_elements, mut xzbbox) =
         osm_parser::parse_osm_data(raw_data, args.bbox, args.scale, args.debug);
-    parsed_elements
-        .sort_by_key(|element: &osm_parser::ProcessedElement| osm_parser::get_priority(element));
+    parsed_elements.par_sort_by_key(|element: &osm_parser::ProcessedElement| {
+        osm_parser::get_priority(element)
+    });
 
     // Write the parsed OSM data to a file for inspection
     if args.debug {
@@ -121,6 +139,9 @@ fn run_cli() {
 }
 
 fn main() {
+    // Initialize rayon thread pool with maximum parallelism
+    initialize_rayon_thread_pool();
+
     // If on Windows, free and reattach to the parent console when using as a CLI tool
     // Either of these can fail, but if they do it is not an issue, so the return value is ignored
     #[cfg(target_os = "windows")]

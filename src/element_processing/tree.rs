@@ -84,7 +84,7 @@ const BIRCH_LEAVES_FILL: [(Coord, Coord); 5] = [
 //////////////////////////////////////////////////
 
 /// Helper function to set blocks in various patterns.
-fn round(editor: &mut WorldEditor, material: Block, (x, y, z): Coord, block_pattern: &[Coord]) {
+fn round(editor: &WorldEditor, material: Block, (x, y, z): Coord, block_pattern: &[Coord]) {
     for (i, j, k) in block_pattern {
         editor.set_block(material, x + i, y + j, z + k, None, None);
     }
@@ -107,7 +107,7 @@ pub struct Tree<'a> {
 }
 
 impl Tree<'_> {
-    pub fn create(editor: &mut WorldEditor, (x, y, z): Coord) {
+    pub fn create(editor: &WorldEditor, (x, y, z): Coord) {
         let mut blacklist: Vec<Block> = Vec::new();
         blacklist.extend(Self::get_building_wall_blocks());
         blacklist.extend(Self::get_building_floor_blocks());

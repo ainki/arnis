@@ -157,7 +157,7 @@ pub fn get_interior_block(c: char, is_layer2: bool, wall_block: Block) -> Option
 /// Generates interior layouts inside buildings at each floor level
 #[allow(clippy::too_many_arguments)]
 pub fn generate_building_interior(
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
     floor_area: &[(i32, i32)],
     min_x: i32,
     min_z: i32,

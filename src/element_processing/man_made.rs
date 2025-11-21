@@ -4,7 +4,7 @@ use crate::bresenham::bresenham_line;
 use crate::osm_parser::{ProcessedElement, ProcessedNode};
 use crate::world_editor::WorldEditor;
 
-pub fn generate_man_made(editor: &mut WorldEditor, element: &ProcessedElement, _args: &Args) {
+pub fn generate_man_made(editor: &WorldEditor, element: &ProcessedElement, _args: &Args) {
     // Skip if 'layer' or 'level' is negative in the tags
     if let Some(layer) = element.tags().get("layer") {
         if layer.parse::<i32>().unwrap_or(0) < 0 {
@@ -32,7 +32,7 @@ pub fn generate_man_made(editor: &mut WorldEditor, element: &ProcessedElement, _
 }
 
 /// Generate a pier structure with OAK_SLAB planks and OAK_LOG support pillars
-fn generate_pier(editor: &mut WorldEditor, element: &ProcessedElement) {
+fn generate_pier(editor: &WorldEditor, element: &ProcessedElement) {
     if let ProcessedElement::Way(way) = element {
         let nodes = &way.nodes;
         if nodes.len() < 2 {
@@ -87,7 +87,7 @@ fn generate_pier(editor: &mut WorldEditor, element: &ProcessedElement) {
 }
 
 /// Generate an antenna/radio tower
-fn generate_antenna(editor: &mut WorldEditor, element: &ProcessedElement) {
+fn generate_antenna(editor: &WorldEditor, element: &ProcessedElement) {
     if let Some(first_node) = element.nodes().next() {
         let x = first_node.x;
         let z = first_node.z;
@@ -133,7 +133,7 @@ fn generate_antenna(editor: &mut WorldEditor, element: &ProcessedElement) {
 }
 
 /// Generate a chimney structure
-fn generate_chimney(editor: &mut WorldEditor, element: &ProcessedElement) {
+fn generate_chimney(editor: &WorldEditor, element: &ProcessedElement) {
     if let Some(first_node) = element.nodes().next() {
         let x = first_node.x;
         let z = first_node.z;
@@ -155,7 +155,7 @@ fn generate_chimney(editor: &mut WorldEditor, element: &ProcessedElement) {
 }
 
 /// Generate a water well structure
-fn generate_water_well(editor: &mut WorldEditor, element: &ProcessedElement) {
+fn generate_water_well(editor: &WorldEditor, element: &ProcessedElement) {
     if let Some(first_node) = element.nodes().next() {
         let x = first_node.x;
         let z = first_node.z;
@@ -191,7 +191,7 @@ fn generate_water_well(editor: &mut WorldEditor, element: &ProcessedElement) {
 }
 
 /// Generate a water tower structure
-fn generate_water_tower(editor: &mut WorldEditor, element: &ProcessedElement) {
+fn generate_water_tower(editor: &WorldEditor, element: &ProcessedElement) {
     if let Some(first_node) = element.nodes().next() {
         let x = first_node.x;
         let z = first_node.z;
@@ -240,7 +240,7 @@ fn generate_water_tower(editor: &mut WorldEditor, element: &ProcessedElement) {
 }
 
 /// Generate man_made structures for node elements
-pub fn generate_man_made_nodes(editor: &mut WorldEditor, node: &ProcessedNode) {
+pub fn generate_man_made_nodes(editor: &WorldEditor, node: &ProcessedNode) {
     if let Some(man_made_type) = node.tags.get("man_made") {
         let element = ProcessedElement::Node(node.clone());
 

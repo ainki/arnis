@@ -3,9 +3,11 @@ use crate::coordinate_system::geographic::{LLBBox, LLPoint};
 use crate::coordinate_system::transformation::CoordTransformer;
 use crate::progress::emit_gui_progress_update;
 use colored::Colorize;
+use rayon::prelude::*;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 // Raw data from OSM
 
@@ -106,6 +108,7 @@ pub struct ProcessedWay {
 pub enum ProcessedMemberRole {
     Outer,
     Inner,
+    Part,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -190,103 +193,151 @@ pub fn parse_osm_data(
     let mut nodes_map: HashMap<u64, ProcessedNode> = HashMap::new();
     let mut ways_map: HashMap<u64, ProcessedWay> = HashMap::new();
 
-    let mut processed_elements: Vec<ProcessedElement> = Vec::new();
+    let processed_elements: Arc<Mutex<Vec<ProcessedElement>>> = Arc::new(Mutex::new(Vec::new()));
 
     // First pass: store all nodes with Minecraft coordinates and process nodes with tags
-    for element in data.nodes {
-        if let (Some(lat), Some(lon)) = (element.lat, element.lon) {
-            let llpoint = LLPoint::new(lat, lon).unwrap_or_else(|e| {
-                eprintln!("Encountered invalid node element:\n{e}");
-                panic!();
-            });
+    let processed_nodes: Vec<_> = data
+        .nodes
+        .par_iter()
+        .filter_map(|element| {
+            if let (Some(lat), Some(lon)) = (element.lat, element.lon) {
+                let llpoint = LLPoint::new(lat, lon).unwrap_or_else(|e| {
+                    eprintln!("Encountered invalid node element:\n{e}");
+                    panic!();
+                });
 
-            let xzpoint = coord_transformer.transform_point(llpoint);
+                let xzpoint = coord_transformer.transform_point(llpoint);
 
-            let processed: ProcessedNode = ProcessedNode {
-                id: element.id,
-                tags: element.tags.clone().unwrap_or_default(),
-                x: xzpoint.x,
-                z: xzpoint.z,
-            };
+                let processed = ProcessedNode {
+                    id: element.id,
+                    tags: element.tags.clone().unwrap_or_default(),
+                    x: xzpoint.x,
+                    z: xzpoint.z,
+                };
 
-            nodes_map.insert(element.id, processed.clone());
+                Some((element.id, processed))
+            } else {
+                None
+            }
+        })
+        .collect();
 
-            processed_elements.push(ProcessedElement::Node(processed));
-        }
+    // Insert into maps and elements list
+    for (id, processed_node) in processed_nodes {
+        nodes_map.insert(id, processed_node.clone());
+        processed_elements
+            .lock()
+            .unwrap()
+            .push(ProcessedElement::Node(processed_node));
     }
 
     // Second pass: process ways and clip them to bbox
-    for element in data.ways {
-        let mut nodes: Vec<ProcessedNode> = vec![];
-        if let Some(node_ids) = &element.nodes {
-            for &node_id in node_ids {
-                if let Some(node) = nodes_map.get(&node_id) {
-                    nodes.push(node.clone());
+    let processed_ways: Vec<_> = data
+        .ways
+        .par_iter()
+        .map(|element| {
+            let mut nodes: Vec<ProcessedNode> = vec![];
+            if let Some(node_ids) = &element.nodes {
+                for &node_id in node_ids {
+                    if let Some(node) = nodes_map.get(&node_id) {
+                        nodes.push(node.clone());
+                    }
                 }
             }
-        }
 
-        let processed: ProcessedWay = ProcessedWay {
-            id: element.id,
-            tags: element.tags.clone().unwrap_or_default(),
-            nodes,
-        };
+            let processed = ProcessedWay {
+                id: element.id,
+                tags: element.tags.clone().unwrap_or_default(),
+                nodes,
+            };
 
-        ways_map.insert(element.id, processed.clone());
-        processed_elements.push(ProcessedElement::Way(processed));
+            (element.id, processed)
+        })
+        .collect();
+
+    // Insert into maps and elements list
+    for (id, processed_way) in processed_ways {
+        ways_map.insert(id, processed_way.clone());
+        processed_elements
+            .lock()
+            .unwrap()
+            .push(ProcessedElement::Way(processed_way));
     }
 
     // Third pass: process relations and clip member ways
-    for element in data.relations {
-        let Some(tags) = &element.tags else {
-            continue;
-        };
+    let processed_relations: Vec<_> = data
+        .relations
+        .par_iter()
+        .filter_map(|element| {
+            let tags = element.tags.as_ref()?;
 
-        // Only process multipolygons for now
-        if tags.get("type").map(|x: &String| x.as_str()) != Some("multipolygon") {
-            continue;
-        };
+            let relation_type = tags.get("type").map(|x: &String| x.as_str());
+            let is_building_relation = relation_type == Some("building")
+                || tags.contains_key("building")
+                || tags.contains_key("building:part");
 
-        let members: Vec<ProcessedMember> = element
-            .members
-            .iter()
-            .filter_map(|mem: &OsmMember| {
-                if mem.r#type != "way" {
-                    eprintln!("WARN: Unknown relation member type \"{}\"", mem.r#type);
-                    return None;
-                }
+            // Only process multipolygon and building relations for now
+            if relation_type != Some("multipolygon") && relation_type != Some("building") {
+                return None;
+            }
 
-                let role = match mem.role.as_str() {
-                    "outer" => ProcessedMemberRole::Outer,
-                    "inner" => ProcessedMemberRole::Inner,
-                    _ => return None,
-                };
-
-                // Check if the way exists in ways_map
-                let way: ProcessedWay = match ways_map.get(&mem.r#ref) {
-                    Some(w) => w.clone(),
-                    None => {
-                        // Way was likely filtered out because it was completely outside the bbox
+            let members: Vec<ProcessedMember> = element
+                .members
+                .iter()
+                .filter_map(|mem: &OsmMember| {
+                    if mem.r#type != "way" {
+                        eprintln!("WARN: Unknown relation member type \"{}\"", mem.r#type);
                         return None;
                     }
-                };
 
-                Some(ProcessedMember { role, way })
-            })
-            .collect();
+                    let role_key = mem.role.trim().to_ascii_lowercase();
 
-        if !members.is_empty() {
-            processed_elements.push(ProcessedElement::Relation(ProcessedRelation {
-                id: element.id,
-                members,
-                tags: tags.clone(),
-            }));
-        }
-    }
+                    let role = match role_key.as_str() {
+                        "outer" | "outline" => ProcessedMemberRole::Outer,
+                        "inner" => ProcessedMemberRole::Inner,
+                        "part" => ProcessedMemberRole::Part,
+                        _ if is_building_relation => ProcessedMemberRole::Outer,
+                        _ => return None,
+                    };
+
+                    // Check if the way exists in ways_map
+                    let way: ProcessedWay = match ways_map.get(&mem.r#ref) {
+                        Some(w) => w.clone(),
+                        None => {
+                            // Way was likely filtered out because it was completely outside the bbox
+                            return None;
+                        }
+                    };
+
+                    Some(ProcessedMember { role, way })
+                })
+                .collect();
+
+            if !members.is_empty() {
+                Some(ProcessedElement::Relation(ProcessedRelation {
+                    id: element.id,
+                    members,
+                    tags: tags.clone(),
+                }))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Add all relations to the processed_elements list
+    processed_elements
+        .lock()
+        .unwrap()
+        .extend(processed_relations);
 
     emit_gui_progress_update(15.0, "");
 
-    (processed_elements, xzbbox)
+    let final_elements = Arc::try_unwrap(processed_elements)
+        .unwrap()
+        .into_inner()
+        .unwrap();
+    (final_elements, xzbbox)
 }
 
 const PRIORITY_ORDER: [&str; 6] = [

@@ -320,6 +320,36 @@ function initSettings() {
     localStorage.setItem(telemetryKey, isEnabled ? 'true' : 'false');
   });
 
+  // Terrain provider selector and token handling
+  const terrainProviderSelect = document.getElementById('terrain-provider-select');
+  const mapboxTokenRow = document.getElementById('mapbox-token-row');
+  const mapboxTokenInput = document.getElementById('mapbox-token-input');
+
+  // Load saved provider preference
+  const savedProvider = localStorage.getItem('terrain-provider') || 'aws';
+  if (terrainProviderSelect) {
+    terrainProviderSelect.value = savedProvider;
+    if (savedProvider === 'mapbox' && mapboxTokenRow) {
+      mapboxTokenRow.style.display = 'block';
+    }
+
+    terrainProviderSelect.addEventListener('change', () => {
+      const val = terrainProviderSelect.value;
+      localStorage.setItem('terrain-provider', val);
+      if (val === 'mapbox') {
+        if (mapboxTokenRow) mapboxTokenRow.style.display = 'block';
+      } else {
+        if (mapboxTokenRow) mapboxTokenRow.style.display = 'none';
+      }
+    });
+  }
+
+  // Load saved token if present
+  const savedToken = localStorage.getItem('mapbox-token');
+  if (mapboxTokenInput && savedToken) {
+    mapboxTokenInput.value = savedToken;
+  }
+
 
   /// License and Credits
   function openLicense() {
@@ -665,11 +695,12 @@ async function startGeneration() {
     var interior = document.getElementById("interior-toggle").checked;
     var roof = document.getElementById("roof-toggle").checked;
     var fill_ground = document.getElementById("fillground-toggle").checked;
+    var water = document.getElementById("water-toggle").checked;
     var scale = parseFloat(document.getElementById("scale-value-slider").value);
     var floodfill_timeout = parseInt(document.getElementById("floodfill-timeout").value, 10);
     // var ground_level = parseInt(document.getElementById("ground-level").value, 10);
     // DEPRECATED: Ground level input removed from UI
-    var ground_level = -62;
+    var ground_level = 0;
 
     // Validate floodfill_timeout and ground_level
     floodfill_timeout = isNaN(floodfill_timeout) || floodfill_timeout < 0 ? 20 : floodfill_timeout;
@@ -677,6 +708,14 @@ async function startGeneration() {
 
     // Get telemetry consent (defaults to false if not set)
     const telemetryConsent = window.getTelemetryConsent ? window.getTelemetryConsent() : false;
+
+    // Terrain provider and token (if applicable)
+    const terrainProvider = (document.getElementById('terrain-provider-select') && document.getElementById('terrain-provider-select').value) || 'aws';
+    const mapboxToken = (document.getElementById('mapbox-token-input') && document.getElementById('mapbox-token-input').value) || '';
+    if (terrainProvider === 'mapbox' && mapboxToken) {
+      // Persist token locally for convenience
+      localStorage.setItem('mapbox-token', mapboxToken);
+    }
 
     // Pass the selected options to the Rust backend
     await invoke("gui_start_generation", {
@@ -690,9 +729,12 @@ async function startGeneration() {
         interiorEnabled: interior,
         roofEnabled: roof,
         fillgroundEnabled: fill_ground,
+        waterEnabled: water,
         isNewWorld: isNewWorld,
         spawnPoint: spawnPoint,
         telemetryConsent: telemetryConsent || false
+      , terrainProvider: terrainProvider,
+      mapboxToken: mapboxToken
     });
 
     console.log("Generation process started.");

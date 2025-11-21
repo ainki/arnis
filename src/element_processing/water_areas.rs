@@ -8,7 +8,7 @@ use crate::{
     world_editor::WorldEditor,
 };
 
-pub fn generate_water_area_from_way(editor: &mut WorldEditor, element: &ProcessedWay) {
+pub fn generate_water_area_from_way(editor: &WorldEditor, element: &ProcessedWay) {
     let start_time = Instant::now();
 
     let outers = [element.nodes.clone()];
@@ -20,7 +20,7 @@ pub fn generate_water_area_from_way(editor: &mut WorldEditor, element: &Processe
     generate_water_areas(editor, &outers, &[], start_time);
 }
 
-pub fn generate_water_areas_from_relation(editor: &mut WorldEditor, element: &ProcessedRelation) {
+pub fn generate_water_areas_from_relation(editor: &WorldEditor, element: &ProcessedRelation) {
     let start_time = Instant::now();
 
     // Check if this is a water relation (either with water tag or natural=water)
@@ -49,6 +49,7 @@ pub fn generate_water_areas_from_relation(editor: &mut WorldEditor, element: &Pr
         match mem.role {
             ProcessedMemberRole::Outer => outers.push(mem.way.nodes.clone()),
             ProcessedMemberRole::Inner => inners.push(mem.way.nodes.clone()),
+            ProcessedMemberRole::Part => {}
         }
     }
 
@@ -68,7 +69,7 @@ pub fn generate_water_areas_from_relation(editor: &mut WorldEditor, element: &Pr
 }
 
 fn generate_water_areas(
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
     outers: &[Vec<ProcessedNode>],
     inners: &[Vec<ProcessedNode>],
     start_time: Instant,
@@ -192,7 +193,7 @@ fn inverse_floodfill(
     max_z: i32,
     outers: Vec<Vec<XZPoint>>,
     inners: Vec<Vec<XZPoint>>,
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
     start_time: Instant,
 ) {
     let inners: Vec<_> = inners
@@ -238,7 +239,7 @@ fn inverse_floodfill_recursive(
     max: (i32, i32),
     outers: &[Polygon],
     inners: &[Polygon],
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
     start_time: Instant,
 ) {
     // Check if we've exceeded 25 seconds
@@ -312,7 +313,7 @@ fn inverse_floodfill_iterative(
     ground_level: i32,
     outers: &[Polygon],
     inners: &[Polygon],
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
 ) {
     for x in min.0..max.0 {
         for z in min.1..max.1 {
@@ -333,7 +334,7 @@ fn rect_fill(
     min_z: i32,
     max_z: i32,
     ground_level: i32,
-    editor: &mut WorldEditor,
+    editor: &WorldEditor,
 ) {
     for x in min_x..max_x {
         for z in min_z..max_z {

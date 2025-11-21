@@ -123,6 +123,14 @@
           </div>
         </div>
 
+        <!-- Water Generation Toggle Button -->
+        <div class="settings-row">
+          <label for="water-toggle" data-localize="water">Generate Water</label>
+          <div class="settings-control">
+            <input type="checkbox" id="water-toggle" name="water-toggle" checked>
+          </div>
+        </div>
+
         <!-- World Scale Slider -->
         <div class="settings-row">
           <label for="scale-value-slider" data-localize="world_scale">World Scale</label>
@@ -159,6 +167,25 @@
               <option value="stadia-bright">Smooth Bright</option>
               <option value="stadia-dark">Smooth Dark</option>
             </select>
+          </div>
+        </div>
+
+        <!-- Terrain Provider Selector -->
+        <div class="settings-row">
+          <label for="terrain-provider-select">Terrain Provider</label>
+          <div class="settings-control">
+            <select id="terrain-provider-select" name="terrain-provider-select" class="theme-dropdown">
+              <option value="aws">AWS Terrarium (no token)</option>
+              <option value="mapbox">Mapbox Terrain RGB (requires token)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Mapbox Token Input (hidden unless Mapbox selected) -->
+        <div class="settings-row" id="mapbox-token-row" style="display:none;">
+          <label for="mapbox-token-input">Mapbox Access Token</label>
+          <div class="settings-control">
+            <input type="text" id="mapbox-token-input" name="mapbox-token-input" placeholder="pk.XXXX..." />
           </div>
         </div>
 
