@@ -39,42 +39,133 @@ pub fn generate_amenities(editor: &WorldEditor, element: &ProcessedElement, args
                 }
             }
             "bicycle_parking" => {
-                let ground_block: Block = OAK_PLANKS;
-                let roof_block: Block = STONE_BLOCK_SLAB;
+                let is_covered = element.tags().get("covered")
+                    .map(|v| v == "yes")
+                    .unwrap_or(false);
 
-                let polygon_coords: Vec<(i32, i32)> = element
-                    .nodes()
-                    .map(|n: &crate::osm_parser::ProcessedNode| (n.x, n.z))
-                    .collect();
+                if is_covered {
+                    // Covered bicycle parking - create shelter structure
+                    let ground_block: Block = STONE_BRICKS;
+                    let roof_block: Block = STONE_BLOCK_SLAB;
 
-                if polygon_coords.is_empty() {
-                    return;
-                }
+                    let polygon_coords: Vec<(i32, i32)> = element
+                        .nodes()
+                        .map(|n: &crate::osm_parser::ProcessedNode| (n.x, n.z))
+                        .collect();
 
-                let floor_area: Vec<(i32, i32)> =
-                    flood_fill_area(&polygon_coords, args.timeout.as_ref());
-
-                // Fill the floor area
-                for (x, z) in floor_area.iter() {
-                    editor.set_block(ground_block, *x, 0, *z, None, None);
-                }
-
-                // Place fences and roof slabs at each corner node
-                for node in element.nodes() {
-                    let x: i32 = node.x;
-                    let z: i32 = node.z;
-
-                    // Set ground block and fences
-                    editor.set_block(ground_block, x, 0, z, None, None);
-                    for y in 1..=4 {
-                        editor.set_block(OAK_FENCE, x, y, z, None, None);
+                    if polygon_coords.is_empty() {
+                        return;
                     }
-                    editor.set_block(roof_block, x, 5, z, None, None);
-                }
 
-                // Flood fill the roof area
-                for (x, z) in floor_area.iter() {
-                    editor.set_block(roof_block, *x, 5, *z, None, None);
+                    let floor_area: Vec<(i32, i32)> =
+                        flood_fill_area(&polygon_coords, args.timeout.as_ref());
+
+                    // Fill the floor area
+                    for (x, z) in floor_area.iter() {
+                        editor.set_block(ground_block, *x, 0, *z, None, None);
+                    }
+
+                    // Place fences and roof slabs at each corner node
+                    for node in element.nodes() {
+                        let x: i32 = node.x;
+                        let z: i32 = node.z;
+
+                        // Set ground block and fences
+                        editor.set_block(ground_block, x, 0, z, None, None);
+                        for y in 1..=4 {
+                            editor.set_block(OAK_FENCE, x, y, z, None, None);
+                        }
+                        editor.set_block(roof_block, x, 5, z, None, None);
+                    }
+
+                    // Place iron bars (bike racks) inside the covered area
+                    for (x, z) in floor_area.iter() {
+                        // Create bike racks with 2 iron bars next to each other, with 1 block padding
+                        if x % 3 == 0 && z % 2 == 0 {
+                            // First bar: connected east to the second bar
+                            let bar1 = crate::block_definitions::create_iron_bars_with_connections(
+                                false, false, true, false
+                            );
+                            editor.set_block_with_properties_absolute(
+                                bar1,
+                                *x,
+                                editor.get_absolute_y(*x, 1, *z),
+                                *z,
+                                None,
+                                None,
+                            );
+                            
+                            // Second bar: connected west to the first bar
+                            let bar2 = crate::block_definitions::create_iron_bars_with_connections(
+                                false, false, false, true
+                            );
+                            editor.set_block_with_properties_absolute(
+                                bar2,
+                                x + 1,
+                                editor.get_absolute_y(x + 1, 1, *z),
+                                *z,
+                                None,
+                                None,
+                            );
+                        }
+                    }
+
+                    // Flood fill the roof area
+                    for (x, z) in floor_area.iter() {
+                        editor.set_block(roof_block, *x, 5, *z, None, None);
+                    }
+                } else {
+                    // Uncovered bicycle parking - place iron bars (bike racks)
+                    let ground_block: Block = STONE_BRICKS;
+                    
+                    let polygon_coords: Vec<(i32, i32)> = element
+                        .nodes()
+                        .map(|n: &crate::osm_parser::ProcessedNode| (n.x, n.z))
+                        .collect();
+
+                    if polygon_coords.is_empty() {
+                        return;
+                    }
+
+                    let floor_area: Vec<(i32, i32)> =
+                        flood_fill_area(&polygon_coords, args.timeout.as_ref());
+
+                    // Fill the floor area
+                    for (x, z) in floor_area.iter() {
+                        editor.set_block(ground_block, *x, 0, *z, None, None);
+                    }
+
+                    // Place iron bars in a grid pattern with padding
+                    for (x, z) in floor_area.iter() {
+                        // Create bike racks with 2 iron bars next to each other, with 1 block padding
+                        if x % 3 == 0 && z % 2 == 0 {
+                            // First bar: connected east to the second bar
+                            let bar1 = crate::block_definitions::create_iron_bars_with_connections(
+                                false, false, true, false
+                            );
+                            editor.set_block_with_properties_absolute(
+                                bar1,
+                                *x,
+                                editor.get_absolute_y(*x, 1, *z),
+                                *z,
+                                None,
+                                None,
+                            );
+                            
+                            // Second bar: connected west to the first bar
+                            let bar2 = crate::block_definitions::create_iron_bars_with_connections(
+                                false, false, false, true
+                            );
+                            editor.set_block_with_properties_absolute(
+                                bar2,
+                                x + 1,
+                                editor.get_absolute_y(x + 1, 1, *z),
+                                *z,
+                                None,
+                                None,
+                            );
+                        }
+                    }
                 }
             }
             "bench" => {
