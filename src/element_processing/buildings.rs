@@ -676,26 +676,33 @@ pub fn generate_buildings(
             }
         }
 
+        const CLEARABLE_TERRAIN_BLOCKS: [Block; 3] = [GRASS_BLOCK, DIRT, STONE];
+
         for (x, z) in floor_area.iter().cloned() {
             if processed_points.insert((x, z)) {
-                // Create foundation columns for the floor area when using terrain
-                if args.terrain {
-                    // Calculate actual ground level at this position
-                    if let Some(ground) = editor.get_ground() {
-                        ground.level(XZPoint::new(
-                            x - editor.get_min_coords().0,
-                            z - editor.get_min_coords().1,
-                        ))
-                    } else {
-                        args.ground_level
-                    };
+                let floor_y_absolute = start_y_offset + abs_terrain_offset;
+                let ceiling_y = floor_y_absolute + building_height;
+
+                // Reserve this column so we can clear terrain after the ground pass
+                editor.reserve_column_range(x, z, floor_y_absolute, ceiling_y);
+
+                // Clear existing terrain blocks immediately if present
+                for y in floor_y_absolute..=ceiling_y {
+                    editor.set_block_absolute(
+                        AIR,
+                        x,
+                        y,
+                        z,
+                        Some(&CLEARABLE_TERRAIN_BLOCKS),
+                        None,
+                    );
                 }
 
-                // Set floor at start_y_offset
+                // Set floor at start_y_offset (use absolute since start_y_offset is already absolute)
                 editor.set_block_absolute(
                     floor_block,
                     x,
-                    start_y_offset + abs_terrain_offset,
+                    floor_y_absolute,
                     z,
                     None,
                     None,

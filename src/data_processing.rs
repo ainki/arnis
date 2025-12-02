@@ -431,6 +431,9 @@ pub fn generate_world(
         println!("Skipping elevation-based water generation (disabled)");
     }
 
+    // Final cleanup: ensure reserved building interiors stay clear of grass/dirt
+    editor.clear_reserved_columns();
+
     // Editor is already mutable through interior mutability
 
     // Save world

@@ -378,6 +378,7 @@ pub struct WorldEditor<'a> {
     xzbbox: &'a XZBBox,
     llbbox: LLBBox,
     ground: Option<Box<Ground>>,
+    reserved_columns: DashMap<(i32, i32), (i32, i32)>,
 }
 
 // template<lifetime A>
@@ -391,6 +392,7 @@ impl<'a> WorldEditor<'a> {
             xzbbox,
             llbbox,
             ground: None,
+            reserved_columns: DashMap::new(),
         }
     }
 
@@ -402,6 +404,39 @@ impl<'a> WorldEditor<'a> {
     /// Gets a reference to the ground data if available
     pub fn get_ground(&self) -> Option<&Ground> {
         self.ground.as_ref().map(|g| g.as_ref())
+    }
+
+    /// Reserve a vertical column so we can clear terrain from it later
+    pub fn reserve_column_range(&self, x: i32, z: i32, start_y: i32, end_y: i32) {
+        let (min_y, max_y) = if start_y <= end_y {
+            (start_y, end_y)
+        } else {
+            (end_y, start_y)
+        };
+
+        self.reserved_columns
+            .entry((x, z))
+            .and_modify(|range| {
+                range.0 = range.0.min(min_y);
+                range.1 = range.1.max(max_y);
+            })
+            .or_insert((min_y, max_y));
+    }
+
+    /// Remove unwanted terrain blocks from reserved columns after ground generation
+    pub fn clear_reserved_columns(&self) {
+        const CLEARABLE_BLOCKS: [Block; 3] = [GRASS_BLOCK, DIRT, STONE];
+
+        for entry in self.reserved_columns.iter() {
+            let (x, z) = *entry.key();
+            let (start_y, end_y) = *entry.value();
+
+            for y in start_y..=end_y {
+                self.set_block_absolute(AIR, x, y, z, Some(&CLEARABLE_BLOCKS), None);
+            }
+        }
+
+        self.reserved_columns.clear();
     }
 
     /// Calculate the absolute Y position from a ground-relative offset
