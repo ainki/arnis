@@ -518,6 +518,39 @@ pub fn create_stair_with_properties(
     block_with_props
 }
 
+// Helper function to create iron bars with connection properties
+pub fn create_iron_bars_with_connections(
+    north: bool,
+    south: bool,
+    east: bool,
+    west: bool,
+) -> BlockWithProperties {
+    let mut map = HashMap::new();
+    map.insert(
+        "north".to_string(),
+        Value::String(if north { "true" } else { "false" }.to_string()),
+    );
+    map.insert(
+        "south".to_string(),
+        Value::String(if south { "true" } else { "false" }.to_string()),
+    );
+    map.insert(
+        "east".to_string(),
+        Value::String(if east { "true" } else { "false" }.to_string()),
+    );
+    map.insert(
+        "west".to_string(),
+        Value::String(if west { "true" } else { "false" }.to_string()),
+    );
+    map.insert(
+        "waterlogged".to_string(),
+        Value::String("false".to_string()),
+    );
+
+    let properties = Value::Compound(map);
+    BlockWithProperties::new(IRON_BARS, Some(properties))
+}
+
 // Lazy static blocks
 pub const ACACIA_PLANKS: Block = Block::new(0);
 pub const AIR: Block = Block::new(1);
