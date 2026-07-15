@@ -919,6 +919,7 @@ impl BuildingStyle {
         category: BuildingCategory,
         has_multiple_floors: bool,
         footprint_size: usize,
+        random_roof_shapes: bool,
         rng: &mut impl Rng,
     ) -> Self {
         // === Block Palette ===
@@ -1024,7 +1025,7 @@ impl BuildingStyle {
         } else if let Some(rt) = preset.roof_type {
             let should_generate = preset.generate_roof.unwrap_or(rt != RoofType::Flat);
             (rt, should_generate)
-        } else if qualifies_for_auto_gabled_roof(building_type) {
+        } else if random_roof_shapes && qualifies_for_auto_gabled_roof(building_type) {
             const MAX_FOOTPRINT_FOR_GABLED: usize = 800;
             if footprint_size <= MAX_FOOTPRINT_FOR_GABLED && rng.random_bool(0.9) {
                 (RoofType::Gabled, true)
@@ -4870,6 +4871,7 @@ pub fn generate_buildings(
         category,
         has_multiple_floors,
         cached_footprint_size,
+        args.random_roof_shapes,
         &mut rng,
     );
 

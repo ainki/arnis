@@ -116,6 +116,7 @@ async function applyLocalization(localization) {
     "span[data-localize='interior']": "interior",
     "span[data-localize='fillground']": "fillground",
     "span[data-localize='legacy_trees']": "legacy_trees",
+    "span[data-localize='random_roof_shapes']": "random_roof_shapes",
     "span[data-localize='proposed_highways']": "proposed_highways",
     "span[data-localize='overture']": "overture",
     "span[data-localize='three_dmr']": "three_dmr",
@@ -1613,6 +1614,7 @@ async function startGeneration() {
     var interior = document.getElementById("interior-toggle").checked;
     var fill_ground = document.getElementById("fillground-toggle").checked;
     var legacy_trees = document.getElementById("legacy-trees-toggle").checked;
+    var random_roof_shapes = document.getElementById("random-roof-shapes-toggle").checked;
     var overture = document.getElementById("overture-toggle").checked;
     var proposed_highways = document.getElementById("proposed-highways-toggle").checked;
     var use_3d = document.getElementById("use-3d-toggle").checked;
@@ -1664,6 +1666,7 @@ async function startGeneration() {
         gamemode: gamemode,
         worldTime: worldTime,
         mapItem: mapItem,
+        randomRoofShapes: random_roof_shapes
         proposedHighways: proposed_highways
     });
 

@@ -115,6 +115,10 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub aws_only_elevation: bool,
 
+    /// Generate varied roof shapes for buildings without explicit roof:shape tag (on by default)
+    #[arg(long, default_value_t = true, action = ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    pub random_roof_shapes: bool,
+  
     /// Highways tagged with proposed, for cleaner generation
     #[arg(long, default_value_t = true, action = ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     pub proposed_highways: bool,

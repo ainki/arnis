@@ -932,6 +932,7 @@ fn gui_start_generation(
     gamemode: String,
     world_time: i64,
     map_item: bool,
+    random_roof_shapes: bool,
     proposed_highways: bool,
 ) -> Result<(), String> {
     use progress::emit_gui_error;
@@ -1215,6 +1216,7 @@ fn gui_start_generation(
                 // Frontend refuses previews for rotated worlds, skip the work there.
                 map_preview: world_format != WorldFormat::LuantiWorld
                     && rotation_angle.abs() <= f64::EPSILON,
+                random_roof_shapes,
                 proposed_highways,
             };
 
