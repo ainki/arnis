@@ -755,6 +755,11 @@ fn generate_highways_internal(
     let layer_boost = layer_value_effective * LAYER_HEIGHT_STEP;
 
     if let Some(highway_type) = element.tags().get("highway") {
+        if matches!(highway_type.as_str(), "construction" | "razed")
+            || (!args.proposed_highways && highway_type.as_str() == "proposed")
+        {
+            return;
+        }
         if highway_type == "street_lamp" {
             if let ProcessedElement::Node(first_node) = element {
                 let x: i32 = first_node.x;
@@ -2220,6 +2225,7 @@ pub fn collect_road_surface_coords(
     elements: &[ProcessedElement],
     xzbbox: &XZBBox,
     scale: f64,
+    proposed_highways: bool,
 ) -> CoordinateBitmap {
     let mut bitmap = CoordinateBitmap::new(xzbbox);
 
@@ -2235,6 +2241,7 @@ pub fn collect_road_surface_coords(
         // Exclude non-surface node-only highway types
         match highway_type.as_str() {
             "street_lamp" | "crossing" | "bus_stop" => continue,
+            "proposed" if !proposed_highways => continue,
             _ => {}
         }
 
