@@ -570,7 +570,7 @@ pub fn generate_world_with_options(
     // road or path surface. Uses the same Bresenham + block_range geometry as
     // generate_highways_internal, so the bitmap is a 1:1 match of what gets placed.
     // Amenity processors use this for O(1) nearest-road-block lookups.
-    let road_mask = highways::collect_road_surface_coords(&elements, &xzbbox, args.scale);
+    let road_mask = highways::collect_road_surface_coords(&elements, &xzbbox, args.scale, args.proposed_highways);
 
     // Tunnel bore footprints, so the water depth-carve and vegetation stay off them.
     let tunnel_footprint = highways::collect_tunnel_footprint(&elements, &xzbbox, args.scale);
