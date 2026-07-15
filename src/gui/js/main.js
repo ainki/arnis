@@ -1666,7 +1666,7 @@ async function startGeneration() {
         gamemode: gamemode,
         worldTime: worldTime,
         mapItem: mapItem,
-        randomRoofShapes: random_roof_shapes
+        randomRoofShapes: random_roof_shapes,
         proposedHighways: proposed_highways
     });
 
