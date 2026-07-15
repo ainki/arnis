@@ -115,6 +115,10 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub aws_only_elevation: bool,
 
+    /// Generate varied roof shapes for buildings without explicit roof:shape tag (on by default)
+    #[arg(long, default_value_t = true, action = ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    pub random_roof_shapes: bool,
+
     /// Print generation-only timing to stderr (excludes data fetching)
     #[arg(long, hide = true)]
     pub benchmark: bool,
