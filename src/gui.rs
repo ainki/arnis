@@ -932,6 +932,7 @@ fn gui_start_generation(
     gamemode: String,
     world_time: i64,
     map_item: bool,
+    proposed_highways: bool,
 ) -> Result<(), String> {
     use progress::emit_gui_error;
     use LLBBox;
@@ -1214,6 +1215,7 @@ fn gui_start_generation(
                 // Frontend refuses previews for rotated worlds, skip the work there.
                 map_preview: world_format != WorldFormat::LuantiWorld
                     && rotation_angle.abs() <= f64::EPSILON,
+                proposed_highways,
             };
 
             // If skip_osm_objects is true (terrain-only mode), skip fetching and processing OSM data
